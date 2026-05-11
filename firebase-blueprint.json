@@ -1,0 +1,108 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "User profile information",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "isAdmin": { "type": "boolean" },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["uid", "email", "createdAt", "updatedAt"]
+    },
+    "ApiKey": {
+      "title": "API Key",
+      "description": "Custom Gemini API Keys added by Admin",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "keyValue": { "type": "string" },
+        "assignedTo": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["name", "keyValue", "createdAt"]
+    },
+    "AllowedUser": {
+      "title": "Allowed User",
+      "description": "Emails that are allowed to login",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "addedBy": { "type": "string" }
+      },
+      "required": ["email", "createdAt"]
+    },
+    "AccessRequest": {
+      "title": "Access Request",
+      "description": "User requesting access to application",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected", "dismissed"] }
+      },
+      "required": ["email", "createdAt", "status"]
+    },
+    "ApiKeyRequest": {
+      "title": "API Key Request",
+      "description": "Requests made by users for API keys.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "email": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] }
+      },
+      "required": ["userId", "email", "createdAt", "status"]
+    },
+    "Generation": {
+      "title": "Generation History",
+      "description": "A generated set of prompts by a user",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "title": { "type": "string" },
+        "style": { "type": "string" },
+        "targetAI": { "type": "string" },
+        "result": { "type": "object" },
+        "apiKeyUsed": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "hidden": { "type": "boolean" }
+      },
+      "required": ["userId", "title", "createdAt", "result"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profiles"
+    },
+    "api_keys/{apiKeyId}": {
+      "schema": { "$ref": "#/entities/ApiKey" },
+      "description": "Available API keys"
+    },
+    "generations/{generationId}": {
+      "schema": { "$ref": "#/entities/Generation" },
+      "description": "Generation history"
+    },
+    "allowed_users/{userId}": {
+      "schema": { "$ref": "#/entities/AllowedUser" },
+      "description": "Allowed Users"
+    },
+    "api_key_requests/{reqId}": {
+      "schema": { "$ref": "#/entities/ApiKeyRequest" },
+      "description": "API Key Requests"
+    },
+    "access_requests/{reqId}": {
+      "schema": { "$ref": "#/entities/AccessRequest" },
+      "description": "Platform Access Requests"
+    }
+  }
+}

@@ -1,0 +1,121 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+    
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isSignedIn() { return request.auth != null; }
+    function isHardcodedAdmin() { return isSignedIn() && request.auth.token.email == 'frazcheema82@gmail.com'; }
+    function isAdminUser() {
+      return isHardcodedAdmin() || (isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true);
+    }
+    
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+
+    // Access Requests Collection
+    match /access_requests/{reqId} {
+      function isValidAccessReq(data) {
+        return data.keys().hasAll(['email', 'createdAt', 'status']) &&
+               data.email is string &&
+               data.createdAt is number &&
+               data.status in ['pending', 'approved', 'rejected', 'dismissed'];
+      }
+      allow create: if isSignedIn() && isValidId(reqId) && isValidAccessReq(incoming()) && incoming().status == 'pending' && incoming().email == request.auth.token.email;
+      allow get: if isSignedIn() && (existing().email == request.auth.token.email || isAdminUser());
+      allow list: if isSignedIn() && (resource.data.email == request.auth.token.email || isAdminUser());
+      allow update, delete: if isAdminUser();
+    }
+    
+    // Allowed Users Collection
+    match /allowed_users/{docId} {
+      function isValidAllowedUser(data) {
+        return data.keys().hasAll(['email', 'createdAt']) &&
+               data.email is string && data.email.size() <= 100 &&
+               data.createdAt is number &&
+               (data.get('addedBy', '') is string);
+      }
+      allow get: if isSignedIn();
+      allow list: if isAdminUser() || isSignedIn();
+      allow create: if isAdminUser() && isValidAllowedUser(incoming());
+      allow update: if false;
+      allow delete: if isAdminUser();
+    }
+    
+    // Users Collection
+    match /users/{userId} {
+      function isValidUser(data) {
+        return data.keys().hasAll(['uid', 'email', 'createdAt', 'updatedAt']) &&
+               data.uid is string && data.uid == request.auth.uid &&
+               data.email is string && data.email.size() > 0 &&
+               data.createdAt is number &&
+               data.updatedAt is number &&
+               (data.get('displayName', '') is string) &&
+               (data.get('photoURL', '') is string) &&
+               (data.get('isAdmin', false) is bool);
+      }
+      
+      allow get: if isSignedIn() && (request.auth.uid == userId || isAdminUser());
+      allow list: if isAdminUser();
+      allow create: if isSignedIn() && request.auth.uid == userId && isValidId(userId) && isValidUser(incoming()) && (incoming().get('isAdmin', false) == false || isHardcodedAdmin());
+      allow update: if (isSignedIn() && request.auth.uid == userId && isValidUser(incoming()) && incoming().uid == existing().uid && incoming().email == existing().email && incoming().createdAt == existing().createdAt && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'updatedAt'])) || (isAdminUser() && isValidUser(incoming()) && incoming().createdAt == existing().createdAt && incoming().uid == existing().uid);
+      allow delete: if isAdminUser();
+    }
+    
+    // Api Keys Collection
+    match /api_keys/{apiKeyId} {
+      function isValidApiKey(data) {
+        return data.keys().hasAll(['name', 'keyValue', 'createdAt']) &&
+               data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+               data.keyValue is string && data.keyValue.size() > 0 && data.keyValue.size() <= 500 &&
+               data.createdAt is number &&
+               (data.get('assignedTo', '') is string);
+      }
+      allow get, list: if isSignedIn();
+      allow create: if isAdminUser() && isValidId(apiKeyId) && isValidApiKey(incoming());
+      allow update: if isAdminUser() && isValidId(apiKeyId) && isValidApiKey(incoming()) && incoming().createdAt == existing().createdAt;
+      allow delete: if isAdminUser();
+    }
+    
+    // Api Key Requests Collection
+    match /api_key_requests/{reqId} {
+      function isValidReq(data) {
+        return data.keys().hasAll(['userId', 'email', 'createdAt', 'status']) &&
+               data.userId == request.auth.uid &&
+               data.email is string &&
+               data.createdAt is number &&
+               data.status in ['pending', 'approved', 'rejected'];
+      }
+      allow create: if isSignedIn() && isValidId(reqId) && isValidReq(incoming()) && incoming().status == 'pending';
+      allow get: if isSignedIn() && (existing().userId == request.auth.uid || isAdminUser());
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdminUser());
+      allow update, delete: if isAdminUser();
+    }
+    
+    // Generations Collection
+    match /generations/{genId} {
+      function isValidGeneration(data) {
+        return data.keys().hasAll(['userId', 'title', 'createdAt']) &&
+               data.userId is string && data.userId == request.auth.uid &&
+               data.title is string && data.title.size() <= 300 &&
+               data.createdAt is number &&
+               (data.get('userEmail', '') is string) &&
+               (data.get('style', '') is string) &&
+               (data.get('targetAI', '') is string) &&
+               (data.get('apiKeyUsed', '') is string) &&
+               (data.get('status', '') is string) &&
+               (data.get('error', '') == null || data.get('error', '') is string) &&
+               (data.get('result', {}) == null || data.get('result', {}) is map) &&
+               (data.get('type', '') is string) &&
+               (data.get('hidden', false) is bool);
+      }
+      allow get: if isSignedIn() && (existing().userId == request.auth.uid || isAdminUser());
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdminUser());
+      allow create: if isSignedIn() && isValidId(genId) && isValidGeneration(incoming()) && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+      allow update: if (isAdminUser() && isValidGeneration(incoming())) || (isSignedIn() && existing().userId == request.auth.uid && isValidGeneration(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['hidden']));
+      allow delete: if isAdminUser();
+    }
+  }
+}
