@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Upload, FileText, Copy, Check, Loader2, Sparkles, Download, Palette, Video, Image as ImageIcon, Trash2, User, BookOpen, Calculator, History as HistoryIcon, Clock, Plus, ArrowRight, Wand2, LogOut, KeyRound, ShieldAlert } from 'lucide-react';
-import { generatePrompts, generateVideoPrompts, estimateAmericanTalePrompts, generateAmericanTalePrompts, PromptGenerationResult, extractCharacters, CharacterDetail, analyzeAndSuggestStyle, StyleRecommendation } from './services/geminiService';
+import { generatePrompts, generateVideoPrompts, estimateAmericanTalePrompts, generateAmericanTalePrompts, generateChannelStrategy, generateDeepScenePrompts, PromptGenerationResult, ChannelStrategyResult, extractCharacters, CharacterDetail, analyzeAndSuggestStyle, StyleRecommendation } from './services/geminiService';
 import { useAuth } from './contexts/AuthContext';
 import { collection, onSnapshot, addDoc, query, where, updateDoc, doc } from 'firebase/firestore';
 import { db } from './services/firebaseService';
@@ -9,11 +9,11 @@ import { Link } from 'react-router-dom';
 export interface HistoryItem {
   id: string;
   timestamp: number;
-  type: 'image' | 'video' | 'american';
+  type: 'image' | 'video' | 'american' | 'channel';
   title: string;
   style: string;
   count?: number;
-  result: PromptGenerationResult;
+  result: any;
 }
 
 export interface UploadCharacterData {
@@ -22,6 +22,13 @@ export interface UploadCharacterData {
   details: string;
   imagePreview: string | null;
   imageFile: File | null;
+}
+
+export interface SavedChannel {
+  id: string;
+  name: string;
+  strategy: ChannelStrategyResult;
+  timestamp: number;
 }
 
 export default function App() {
@@ -203,6 +210,38 @@ export default function App() {
   const [americanSentenceCopiedIndex, setAmericanSentenceCopiedIndex] = useState<number | null>(null);
   const [americanSentenceCopiedAll, setAmericanSentenceCopiedAll] = useState(false);
   const americanFileInputRef = useRef<HTMLInputElement>(null);
+
+  // --- CHANNEL PLANNER STATE ---
+  const [channelResearch, setChannelResearch] = useState('');
+  const [channelNiche, setChannelNiche] = useState('');
+  const [channelData, setChannelData] = useState('');
+  const [channelTitles, setChannelTitles] = useState('');
+  const [channelScripts, setChannelScripts] = useState('');
+  const [isChannelGenerating, setIsChannelGenerating] = useState(false);
+  const [channelResult, setChannelResult] = useState<ChannelStrategyResult | null>(null);
+  const [channelError, setChannelError] = useState<string | null>(null);
+  const channelFileInputRef = useRef<HTMLInputElement>(null);
+  const channelResultRef = useRef<HTMLElement>(null);
+  const [isUploadingOnline, setIsUploadingOnline] = useState(false);
+  
+  const [savedChannels, setSavedChannels] = useState<SavedChannel[]>(() => {
+    const saved = localStorage.getItem('saved_channels');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [selectedChannelId, setSelectedChannelId] = useState<string>('');
+  
+  // Follow Up Generator State
+  const [deepVideoTitle, setDeepVideoTitle] = useState('');
+  const [deepVideoScript, setDeepVideoScript] = useState('');
+  const [deepTargetCount, setDeepTargetCount] = useState<number>(20);
+  const [isDeepGenerating, setIsDeepGenerating] = useState(false);
+  const [deepResult, setDeepResult] = useState<PromptGenerationResult | null>(null);
+  const [deepError, setDeepError] = useState<string | null>(null);
+  
+  useEffect(() => {
+    localStorage.setItem('saved_channels', JSON.stringify(savedChannels));
+  }, [savedChannels]);
+
 
   const realisticStyles = [
     'Cinematic photography',
@@ -629,6 +668,120 @@ export default function App() {
     }
   };
 
+  // --- CHANNEL PLANNER HANDLERS ---
+  const handleGenerateChannelPlan = async () => {
+    if (!channelNiche.trim() || !channelScripts.trim()) {
+      setChannelError("Please provide all required fields.");
+      return;
+    }
+
+    setIsChannelGenerating(true);
+    setChannelError(null);
+    setChannelResult(null);
+
+    try {
+      const allowedKey = availableKeys.find(k => k.keyValue === selectedApiKey && (k.assignedTo === user?.email || isAdmin));
+      if (!selectedApiKey || !allowedKey) throw new Error("Please select a valid assigned API Key first. Only an Admin can assign you an API Key.");
+      
+      const generatedResult = await generateChannelStrategy(
+        channelResearch,
+        channelNiche,
+        channelData,
+        channelTitles,
+        channelScripts,
+        selectedApiKey
+      );
+      
+      const newChannel: SavedChannel = {
+        id: Date.now().toString(),
+        name: channelNiche,
+        strategy: generatedResult,
+        timestamp: Date.now(),
+      };
+      setSavedChannels(prev => [newChannel, ...prev]);
+      setSelectedChannelId(newChannel.id);
+      
+      setChannelResult(generatedResult);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : "An unknown error occurred.";
+      setChannelError(errMsg);
+    } finally {
+      setIsChannelGenerating(false);
+    }
+  };
+
+  const handleUploadOnline = async () => {
+    if (!channelResult || !channelNiche.trim()) return;
+    setIsUploadingOnline(true);
+    try {
+      await saveToHistory({ 
+        type: 'channel', 
+        title: `Channel Plan: ${channelNiche.substring(0, 30)}...`, 
+        style: 'Strategy', 
+        count: channelResult.suggestedStyles.length, 
+        result: channelResult 
+      });
+      alert('Strategy successfully uploaded online to Firebase!');
+    } catch (err) {
+      alert('Error uploading strategy online: ' + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setIsUploadingOnline(false);
+    }
+  };
+
+  const handleGenerateDeepScenePrompts = async (stylePrefix: string) => {
+    if (!deepVideoTitle.trim() || !deepVideoScript.trim()) {
+      setDeepError("Please provide both a Video Title and Video Script.");
+      return;
+    }
+    
+    const selectedChannel = savedChannels.find(c => c.id === selectedChannelId);
+    if (!selectedChannel) {
+      setDeepError("Please select a valid Channel Strategy.");
+      return;
+    }
+
+    setIsDeepGenerating(true);
+    setDeepError(null);
+    setDeepResult(null);
+
+    try {
+      const allowedKey = availableKeys.find(k => k.keyValue === selectedApiKey && (k.assignedTo === user?.email || isAdmin));
+      if (!selectedApiKey || !allowedKey) throw new Error("Please select a valid assigned API Key first. Only an Admin can assign you an API Key.");
+      
+      const generatedResult = await generateDeepScenePrompts(
+        selectedChannel.strategy,
+        stylePrefix,
+        deepVideoTitle,
+        deepVideoScript,
+        deepTargetCount,
+        selectedApiKey
+      );
+      
+      setDeepResult(generatedResult);
+      saveToHistory({ 
+        type: 'video', 
+        title: `Deep Scene: ${deepVideoTitle}`, 
+        style: `${selectedChannel.name} Style`, 
+        count: generatedResult.prompts.length, 
+        result: generatedResult 
+      });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : "An unknown error occurred.";
+      setDeepError(errMsg);
+      saveToHistory({ 
+        type: 'video', 
+        title: `Deep Scene: ${deepVideoTitle}`, 
+        style: `${selectedChannel?.name || 'Unknown'} Style`, 
+        count: 0, 
+        result: { prompts: [] }, 
+        error: errMsg 
+      });
+    } finally {
+      setIsDeepGenerating(false);
+    }
+  };
+
   const copyAmericanToClipboard = (text: string, index: number) => {
     navigator.clipboard.writeText(text);
     setAmericanCopiedIndex(index);
@@ -859,6 +1012,13 @@ export default function App() {
             >
               <BookOpen className="w-4 h-4" />
               <span className="hidden sm:inline">American Tale</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('channel')}
+              className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 rounded-md text-sm font-medium transition-colors whitespace-nowrap ${activeTab === 'channel' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
+            >
+              <Video className="w-4 h-4" />
+              <span className="hidden sm:inline">Channel Planner</span>
             </button>
             <button
               onClick={() => setActiveTab('history')}
@@ -2049,6 +2209,363 @@ export default function App() {
           </>
         )}
         
+        {/* ================= CHANNEL PLANNER TAB ================= */}
+        {activeTab === 'channel' && (
+          <>
+            <div className="flex items-center justify-between mb-8 pb-4 border-b border-gray-200">
+               <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+                 <Video className="w-6 h-6 text-indigo-600" />
+                 Channel Master Planner
+               </h2>
+               <div className="w-64">
+                 <select
+                   className="w-full px-4 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-indigo-500 font-medium"
+                   value={selectedChannelId}
+                   onChange={(e) => {
+                     setSelectedChannelId(e.target.value);
+                     const c = savedChannels.find(ch => ch.id === e.target.value);
+                     if (c) setChannelResult(c.strategy);
+                     else setChannelResult(null);
+                   }}
+                 >
+                   <option value="" disabled>Saved Channels...</option>
+                   {savedChannels.length === 0 && <option value="" disabled>No channels saved yet</option>}
+                   {savedChannels.map(c => (
+                     <option key={c.id} value={c.id}>{c.name}</option>
+                   ))}
+                 </select>
+               </div>
+            </div>
+
+            {/* Stage 1: The Blueprint Form */}
+            <section className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden mb-8">
+              <div className="p-6 sm:p-8">
+                <div className="flex items-center gap-3 mb-6">
+                  <div className="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center text-indigo-600">
+                    <HistoryIcon className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-bold text-gray-900">Stage 1: Initialize Visual Strategy</h2>
+                    <p className="text-sm text-gray-500 mt-1">Provide niche, channel data, titles, and scripts to construct a strategy.</p>
+                  </div>
+                </div>
+
+                <div className="space-y-6">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Research</label>
+                      <textarea
+                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 transition-colors resize-y text-sm min-h-[120px]"
+                        placeholder="Paste channel research, audience insights, etc..."
+                        value={channelResearch}
+                        onChange={(e) => setChannelResearch(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Niche Selection</label>
+                      <textarea
+                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 transition-colors resize-y text-sm min-h-[120px]"
+                        placeholder="e.g., historical documentaries, tech reviews, true crime..."
+                        value={channelNiche}
+                        onChange={(e) => setChannelNiche(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                       <label className="block text-sm font-medium text-gray-700 mb-1">Channel Data</label>
+                       <textarea
+                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 transition-colors resize-y text-sm min-h-[120px]"
+                        placeholder="Describe target demographics, competitors, analytics goals..."
+                        value={channelData}
+                        onChange={(e) => setChannelData(e.target.value)}
+                       />
+                    </div>
+                    
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">30 Titles</label>
+                      <textarea
+                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 transition-colors resize-y text-sm min-h-[120px]"
+                        placeholder="Paste 30 titles for the channel..."
+                        value={channelTitles}
+                        onChange={(e) => setChannelTitles(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <label className="block text-sm font-medium text-gray-700">1 Complete Script</label>
+                      <button 
+                        onClick={() => channelFileInputRef.current?.click()}
+                        className="text-indigo-600 hover:text-indigo-800 text-xs font-medium flex items-center gap-1"
+                      >
+                        <Upload className="w-3 h-3" /> Upload .txt
+                      </button>
+                      <input type="file" accept=".txt" className="hidden" ref={channelFileInputRef} onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          const reader = new FileReader();
+                          reader.onload = (event) => { if (event.target?.result) setChannelScripts(event.target.result as string); };
+                          reader.readAsText(file);
+                        }}
+                      />
+                    </div>
+                    <textarea
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 transition-colors resize-y text-sm bg-gray-50 min-h-[150px]"
+                      placeholder="Paste in some sample scripts or rough outlines..."
+                      value={channelScripts}
+                      onChange={(e) => setChannelScripts(e.target.value)}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="px-6 py-4 bg-gray-50 border-t border-gray-200">
+                {channelError && (
+                  <div className="mb-4 p-4 bg-red-50 text-red-700 rounded-lg text-sm flex items-start gap-2">
+                    <ShieldAlert className="w-5 h-5 flex-shrink-0 mt-0.5" />
+                    <p>{channelError}</p>
+                  </div>
+                )}
+                
+                <button
+                  onClick={handleGenerateChannelPlan}
+                  disabled={isChannelGenerating || !channelNiche.trim() || !channelScripts.trim()}
+                  className="w-full py-3 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg transition-colors flex items-center justify-center gap-2 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isChannelGenerating ? (
+                    <><Loader2 className="w-5 h-5 animate-spin" /> Analyzing Strategy...</>
+                  ) : (
+                    <><Wand2 className="w-5 h-5" /> Generate Channel Plan</>
+                  )}
+                </button>
+              </div>
+            </section>
+
+            {/* Stage 2: Results Section Hub */}
+            {channelResult && (
+              <section className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden mb-8 animate-in fade-in" ref={channelResultRef}>
+                <div className="p-6 sm:p-8">
+                  <div className="flex items-center justify-between mb-8 border-b border-gray-100 pb-4">
+                    <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+                      <Sparkles className="w-6 h-6 text-indigo-500" />
+                      Stage 2: Visual Identity Hub
+                    </h2>
+                    <button
+                      onClick={handleUploadOnline}
+                      disabled={isUploadingOnline}
+                      className="px-4 py-2 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 disabled:opacity-50"
+                    >
+                      {isUploadingOnline ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                      Upload Online
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                    
+                    <div className="lg:col-span-2 space-y-6">
+                      <div className="bg-indigo-50/50 p-6 rounded-xl border border-indigo-100">
+                        <h3 className="text-xs font-bold text-indigo-800 uppercase tracking-widest mb-2">Psychological Overview</h3>
+                        <p className="text-gray-800 text-sm leading-relaxed">{channelResult.overview}</p>
+                      </div>
+                      <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
+                        <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">Niche Analysis</h3>
+                        <p className="text-gray-800 text-sm leading-relaxed">{channelResult.nicheAnalysis}</p>
+                      </div>
+                      <div className="bg-gray-50 p-6 rounded-xl border border-gray-200 shadow-sm">
+                        <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">Content Roadmap</h3>
+                        <p className="text-gray-800 text-sm leading-relaxed whitespace-pre-line">{channelResult.contentRoadmap}</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      <div className="bg-gray-900 text-white p-6 rounded-xl shadow-lg border border-gray-800">
+                        <h3 className="text-sm font-bold text-gray-300 uppercase tracking-widest mb-4 flex items-center gap-2">
+                          <Palette className="w-4 h-4" /> Channel DNA
+                        </h3>
+                        <ul className="space-y-4 text-sm">
+                          <li>
+                            <span className="block text-gray-500 text-xs uppercase mb-1">Media Type</span>
+                            <span className="font-medium text-emerald-400">{channelResult.visualDirection.mediaType}</span>
+                          </li>
+                          <li>
+                            <span className="block text-gray-500 text-xs uppercase mb-1">Atmosphere</span>
+                            <span className="font-medium text-indigo-300">{channelResult.visualDirection.atmosphere}</span>
+                          </li>
+                          <li>
+                            <span className="block text-gray-500 text-xs uppercase mb-1">Character Protocols</span>
+                            <span className="font-medium">{channelResult.visualDirection.characterProtocols}</span>
+                          </li>
+                          <li>
+                            <span className="block text-gray-500 text-xs uppercase mb-1">Environmental Focus</span>
+                            <span className="font-medium text-amber-200">{channelResult.visualDirection.environmentalFocus}</span>
+                          </li>
+                          <li>
+                            <span className="block text-gray-500 text-xs uppercase mb-1">Era / Setting</span>
+                            <span className="font-medium">{channelResult.visualDirection.eraAndSetting}</span>
+                          </li>
+                          <li>
+                            <span className="block text-gray-500 text-xs uppercase mb-1">Camera / Framing</span>
+                            <span className="font-medium text-blue-300">{channelResult.visualDirection.cameraAndFraming}</span>
+                          </li>
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-8 pt-8 border-t border-gray-100">
+                    <h3 className="text-lg font-bold text-gray-900 mb-6">Suggested Visual Styles</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                      {channelResult.suggestedStyles.map((style, idx) => (
+                        <div key={idx} className="bg-white border border-gray-200 p-5 rounded-xl shadow-sm flex flex-col justify-between">
+                           <div>
+                            <h4 className="font-bold text-gray-900 mb-2 leading-tight">{style.styleName}</h4>
+                            <p className="text-sm text-gray-500 mb-4">{style.description}</p>
+                           </div>
+                           <div className="mt-4 pt-4 border-t border-gray-100">
+                             <p className="text-xs font-mono text-gray-400 mb-2 truncate" title={style.promptPrefix}>{style.promptPrefix}</p>
+                             <button
+                               onClick={() => navigator.clipboard.writeText(style.promptPrefix)}
+                               className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-indigo-50 text-indigo-600 rounded-lg text-sm font-medium hover:bg-indigo-100 transition"
+                             >
+                               <Copy className="w-4 h-4" /> Copy Prefix
+                             </button>
+                           </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </section>
+            )}
+
+            {/* Stage 3: Deep Scene Generation */}
+            {selectedChannelId && (
+              <section className="bg-gray-950 rounded-2xl shadow-xl border border-gray-800 overflow-hidden animate-in fade-in slide-in-from-bottom-8">
+                <div className="p-6 sm:p-8">
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="w-10 h-10 bg-indigo-900 rounded-xl flex items-center justify-center text-indigo-400">
+                      <Video className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h2 className="text-xl font-bold text-white">Stage 3: Deep Scene Generation</h2>
+                      <p className="text-sm text-gray-400 mt-1">Generate perfectly customized full-scale scene prompts for a specific video script.</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-6 bg-gray-900 p-6 rounded-xl border border-gray-800">
+                    <div className="md:col-span-8">
+                      <label className="block text-sm font-medium text-gray-300 mb-2">New Video Title</label>
+                      <input
+                        type="text"
+                        className="w-full px-4 py-3 bg-gray-950 border border-gray-800 rounded-lg text-white focus:ring-2 focus:ring-indigo-500"
+                        placeholder="A title to help the AI frame the video context..."
+                        value={deepVideoTitle}
+                        onChange={(e) => setDeepVideoTitle(e.target.value)}
+                      />
+                    </div>
+                    <div className="md:col-span-4">
+                       <label className="block text-sm font-medium text-gray-300 mb-2">Target Frame Count</label>
+                       <input
+                        type="number"
+                        className="w-full px-4 py-3 bg-gray-950 border border-gray-800 rounded-lg text-white focus:ring-2 focus:ring-indigo-500 font-mono"
+                        value={deepTargetCount}
+                        onChange={(e) => setDeepTargetCount(Number(e.target.value) || 20)}
+                      />
+                    </div>
+                    <div className="md:col-span-12">
+                      <label className="block text-sm font-medium text-gray-300 mb-2">Full Video Script</label>
+                      <textarea
+                        className="w-full px-4 py-4 bg-gray-950 border border-gray-800 rounded-lg text-white focus:ring-2 focus:ring-indigo-500 min-h-[200px]"
+                        placeholder="Paste the ENTIRE script for this specific video here..."
+                        value={deepVideoScript}
+                        onChange={(e) => setDeepVideoScript(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="mt-8">
+                    {deepError && (
+                      <div className="mb-4 p-4 bg-red-900/30 border border-red-800 text-red-400 rounded-lg text-sm flex items-start gap-2">
+                        <ShieldAlert className="w-5 h-5 flex-shrink-0 mt-0.5" />
+                        <p>{deepError}</p>
+                      </div>
+                    )}
+
+                    <div className="flex flex-col sm:flex-row gap-4 items-center">
+                       <div className="w-full sm:w-1/2">
+                          <label className="block text-sm font-medium text-gray-400 mb-2">Select Style to Apply</label>
+                          <select id="deepStyleSelector" className="w-full px-4 py-3 bg-gray-900 border border-gray-800 rounded-lg text-white focus:ring-2 focus:ring-indigo-500">
+                             {channelResult?.suggestedStyles.map((s, i) => (
+                               <option key={i} value={s.promptPrefix}>{s.styleName}</option>
+                             ))}
+                          </select>
+                       </div>
+                       <div className="w-full sm:w-1/2 pt-6">
+                         <button
+                            onClick={() => {
+                              const select = document.getElementById('deepStyleSelector') as HTMLSelectElement;
+                              handleGenerateDeepScenePrompts(select.value);
+                            }}
+                            disabled={isDeepGenerating || !deepVideoTitle.trim() || !deepVideoScript.trim()}
+                            className="w-full py-3 px-4 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+                         >
+                            {isDeepGenerating ? <><Loader2 className="w-5 h-5 animate-spin" /> Synthesizing Scenes...</> : <><Sparkles className="w-5 h-5" /> Generate Active Production Prompts</>}
+                         </button>
+                       </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Deep Results */}
+                {deepResult && (
+                  <div className="border-t border-gray-800 bg-gray-950 p-6 sm:p-8">
+                    <div className="flex items-center justify-between mb-6">
+                      <h3 className="text-xl font-bold text-white">Production Prompts</h3>
+                      <button
+                        onClick={() => {
+                          const allExtracted = deepResult.prompts.map(p => p.prompt).join('\n\n');
+                          const blob = new Blob([allExtracted], { type: 'text/plain' });
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement('a');
+                          a.href = url;
+                          a.download = `Deep_Scene_${deepVideoTitle.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.txt`;
+                          document.body.appendChild(a);
+                          a.click();
+                          document.body.removeChild(a);
+                          URL.revokeObjectURL(url);
+                        }}
+                        className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white text-sm font-medium rounded-lg flex items-center gap-2"
+                      >
+                         <Download className="w-4 h-4" /> Download All
+                      </button>
+                    </div>
+
+                    <div className="space-y-4">
+                      {deepResult.prompts.map((p, i) => (
+                        <div key={i} className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+                          <div className="flex items-start justify-between gap-4 mb-3">
+                            <h4 className="text-emerald-400 font-bold mb-1">Scene {i + 1}: {p.sentence}</h4>
+                            <button
+                               onClick={() => navigator.clipboard.writeText(p.prompt)}
+                               className="text-gray-500 hover:text-white transition"
+                            >
+                              <Copy className="w-4 h-4" />
+                            </button>
+                          </div>
+                          <p className="text-gray-300 text-sm leading-relaxed font-mono bg-gray-950 p-4 rounded-lg border border-gray-800">{p.prompt}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </section>
+            )}
+          </>
+        )}
+        
         {/* ================= HISTORY TAB ================= */}
         {activeTab === 'history' && (
           <section className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
@@ -2078,7 +2595,7 @@ export default function App() {
                           <h3 className="font-bold text-gray-900 text-lg">{item.title}</h3>
                           <div className="flex flex-wrap items-center gap-2 mt-2">
                             <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-800 uppercase tracking-wide">
-                              {item.type === 'image' ? 'Image' : item.type === 'video' ? 'Video' : 'American Tale'}
+                              {item.type === 'image' ? 'Image' : item.type === 'video' ? 'Video' : item.type === 'american' ? 'American Tale' : 'Channel Plan'}
                             </span>
                             <span className="text-xs text-gray-500 bg-white px-2 py-0.5 rounded-md border border-gray-200">{item.style}</span>
                             <span className="text-xs text-gray-500 flex items-center gap-1">
@@ -2086,27 +2603,29 @@ export default function App() {
                               {new Date(item.timestamp).toLocaleString()}
                             </span>
                             <span className="text-xs text-gray-500 font-bold ml-1">
-                              {item.result.prompts.length} Prompts
+                              {item.type === 'channel' ? (item.result?.videoIdeas?.length || 0) + ' Ideas' : (item.result?.prompts?.length || 0) + ' Prompts'}
                             </span>
                           </div>
                         </div>
                         <div className="flex items-center gap-2 self-start sm:self-auto">
-                          <button
-                            onClick={() => {
-                              const blob = new Blob([item.result.prompts.map(p => p.prompt).join('\n\n')], { type: 'text/plain' });
-                              const url = URL.createObjectURL(blob);
-                              const a = document.createElement('a');
-                              a.href = url;
-                              a.download = `${item.title.replace(/[^a-z0-9]/gi, '_').toLowerCase() || 'history_prompts'}.txt`;
-                              document.body.appendChild(a);
-                              a.click();
-                              document.body.removeChild(a);
-                              URL.revokeObjectURL(url);
-                            }}
-                            className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 hover:text-indigo-600 shadow-sm transition-colors cursor-pointer"
-                          >
-                            <Download className="w-4 h-4" /> Download
-                          </button>
+                          {item.type !== 'channel' && (
+                            <button
+                              onClick={() => {
+                                const blob = new Blob([item.result?.prompts?.map((p: any) => p.prompt).join('\n\n')], { type: 'text/plain' });
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement('a');
+                                a.href = url;
+                                a.download = `${item.title.replace(/[^a-z0-9]/gi, '_').toLowerCase() || 'history_prompts'}.txt`;
+                                document.body.appendChild(a);
+                                a.click();
+                                document.body.removeChild(a);
+                                URL.revokeObjectURL(url);
+                              }}
+                              className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 hover:text-indigo-600 shadow-sm transition-colors cursor-pointer"
+                            >
+                              <Download className="w-4 h-4" /> Download
+                            </button>
+                          )}
                           <button
                             onClick={() => handleHideGeneration(item.id)}
                             className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-sm font-medium text-red-600 hover:bg-red-50 shadow-sm transition-colors cursor-pointer"
@@ -2126,18 +2645,36 @@ export default function App() {
                           </summary>
                           <div className="text-gray-600 mt-4 group-open:animate-fadeIn">
                             <div className="max-h-[400px] overflow-y-auto space-y-4 pr-2">
-                              {item.result.prompts.map((p, i) => (
-                                <div key={i} className="bg-gray-50 p-4 rounded-lg border border-gray-100 grid grid-cols-1 md:grid-cols-2 gap-4">
-                                  <div>
-                                    <p className="text-xs font-bold text-gray-500 uppercase mb-1">Sentence {i+1}</p>
-                                    <p className="text-sm italic">{p.sentence}</p>
+                              {item.type === 'channel' ? (
+                                <div className="space-y-4">
+                                  <div className="bg-indigo-50 p-4 rounded-lg border border-indigo-100">
+                                    <h4 className="font-bold text-indigo-900 mb-2">Content Strategy</h4>
+                                    <p className="text-sm text-indigo-800 whitespace-pre-line">{item.result?.contentStrategy}</p>
                                   </div>
-                                  <div>
-                                    <p className="text-xs font-bold text-indigo-600 uppercase mb-1">Prompt {i+1}</p>
-                                    <p className="text-sm font-medium text-gray-900 leading-relaxed bg-white p-2 rounded border border-gray-200">{p.prompt}</p>
+                                  <h4 className="font-bold text-gray-900 mt-4">Video Ideas</h4>
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    {item.result?.videoIdeas?.map((idea: any, i: number) => (
+                                      <div key={i} className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                                         <p className="font-bold text-gray-800">{idea.title}</p>
+                                         <p className="text-sm text-gray-600 mt-1">{idea.description}</p>
+                                      </div>
+                                    ))}
                                   </div>
                                 </div>
-                              ))}
+                              ) : (
+                                item.result?.prompts?.map((p: any, i: number) => (
+                                 <div key={i} className="bg-gray-50 p-4 rounded-lg border border-gray-100 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                   <div>
+                                     <p className="text-xs font-bold text-gray-500 uppercase mb-1">Sentence {i+1}</p>
+                                     <p className="text-sm italic">{p.sentence}</p>
+                                   </div>
+                                   <div>
+                                     <p className="text-xs font-bold text-indigo-600 uppercase mb-1">Prompt {i+1}</p>
+                                     <p className="text-sm font-medium text-gray-900 leading-relaxed bg-white p-2 rounded border border-gray-200">{p.prompt}</p>
+                                   </div>
+                                 </div>
+                               ))
+                              )}
                             </div>
                           </div>
                         </details>

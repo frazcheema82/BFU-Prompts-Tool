@@ -557,3 +557,167 @@ ${script}
   }
 }
 
+export interface ChannelStrategyResult {
+  overview: string;
+  nicheAnalysis: string;
+  visualDirection: {
+    mediaType: string;
+    atmosphere: string;
+    characterProtocols: string;
+    environmentalFocus: string;
+    eraAndSetting: string;
+    cameraAndFraming: string;
+  };
+  suggestedStyles: {
+    styleName: string;
+    description: string;
+    promptPrefix: string;
+  }[];
+  contentRoadmap: string;
+}
+
+export async function generateChannelStrategy(
+  niche: string,
+  researchData: string,
+  titles: string,
+  scripts: string,
+  apiKey?: string
+): Promise<ChannelStrategyResult> {
+  try {
+    const ai = getGenAI(apiKey);
+    const prompt = `You are an expert YouTube Strategist and Channel Planner.
+I will provide you with the following inputs:
+- Niche/Context: ${niche}
+- Channel Data/Research: ${researchData}
+- Sample Titles: ${titles}
+- Sample Scripts/Content: ${scripts}
+
+Analyze provided details. Provide: 1. Target audience psychological profile (overview and niche analysis). 2. Visual direction (Stock/AI/Hybrid). 3. Asset recommendations for consistency: Atmosphere, Character Protocols, Environmental focus, Era/Setting, Camera Styles. 4. Suggested Styles: 2-3 styles with ready-to-use Prompt Prefixes. 5. Roadmap.`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-3.1-pro",
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      config: {
+        temperature: 0.7,
+        topP: 0.9,
+        safetySettings: relaxedSafetySettings,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            overview: { type: Type.STRING },
+            nicheAnalysis: { type: Type.STRING },
+            visualDirection: {
+              type: Type.OBJECT,
+              properties: {
+                mediaType: { type: Type.STRING },
+                atmosphere: { type: Type.STRING },
+                characterProtocols: { type: Type.STRING },
+                environmentalFocus: { type: Type.STRING },
+                eraAndSetting: { type: Type.STRING },
+                cameraAndFraming: { type: Type.STRING },
+              },
+              required: ["mediaType", "atmosphere", "characterProtocols", "environmentalFocus", "eraAndSetting", "cameraAndFraming"]
+            },
+            suggestedStyles: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  styleName: { type: Type.STRING },
+                  description: { type: Type.STRING },
+                  promptPrefix: { type: Type.STRING }
+                },
+                required: ["styleName", "description", "promptPrefix"]
+              }
+            },
+            contentRoadmap: { type: Type.STRING }
+          },
+          required: ["overview", "nicheAnalysis", "visualDirection", "suggestedStyles", "contentRoadmap"]
+        }
+      }
+    });
+
+    const text = response.text;
+    if (!text) {
+      throw new Error("No text returned from Gemini API.");
+    }
+    
+    return JSON.parse(text) as ChannelStrategyResult;
+  } catch (error: any) {
+    console.error("Error generating Channel Strategy:", error);
+    throw new Error(formatError(error));
+  }
+}
+
+export async function generateDeepScenePrompts(
+  strategy: ChannelStrategyResult,
+  stylePrefix: string,
+  title: string,
+  script: string,
+  targetCount: number,
+  apiKey?: string
+): Promise<PromptGenerationResult> {
+  try {
+    const ai = getGenAI(apiKey);
+    
+    const systemPrompt = `You are an expert AI Cinematographer.
+Analyze the ENTIRE script. Imagine the cinematography. Create Exactly ${targetCount} distinct visual moments. 
+DO NOT map to sentences literal-wise; synthesize the whole narrative. Ensure each prompt includes the provided Style Prefix from the strategy. 
+Prompts must be extremely detailed (lighting, texture, lens).
+
+Style Prefix to prepend to each prompt: "${stylePrefix}"
+
+Strategy Visual Direction:
+- Media Type: ${strategy.visualDirection.mediaType}
+- Atmosphere: ${strategy.visualDirection.atmosphere}
+- Camera/Framing: ${strategy.visualDirection.cameraAndFraming}
+- Setting: ${strategy.visualDirection.eraAndSetting}
+
+Video Title: ${title}
+Script:
+${script}
+`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-3.1-pro",
+      contents: [{ role: 'user', parts: [{ text: "Please generate the scene prompts for the script now focusing on specific lighting and angles." }] }],
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.7,
+        topP: 0.9,
+        safetySettings: relaxedSafetySettings,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            prompts: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  sentence: { type: Type.STRING, description: "The Scene Title/Context" },
+                  prompt: { type: Type.STRING, description: "The Full Detailed AI Prompt" }
+                },
+                required: ["sentence", "prompt"]
+              }
+            }
+          },
+          required: ["prompts"]
+        }
+      }
+    });
+
+    const text = response.text;
+    if (!text) {
+      throw new Error("No text returned from Gemini API.");
+    }
+
+    const result: PromptGenerationResult = JSON.parse(text);
+    return result;
+  } catch (error: any) {
+    console.error("Error generating Deep Scene Prompts:", error);
+    throw new Error(formatError(error)); // Keep signature
+  }
+}
+
