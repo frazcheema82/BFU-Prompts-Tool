@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, FileText, Copy, Check, Loader2, Sparkles, Download, Palette, Video, Image as ImageIcon, Trash2, User, BookOpen, Calculator, History as HistoryIcon, Clock, Plus, ArrowRight, Wand2, LogOut, KeyRound, ShieldAlert } from 'lucide-react';
-import { generatePrompts, generateVideoPrompts, estimateAmericanTalePrompts, generateAmericanTalePrompts, generateChannelStrategy, generateDeepScenePrompts, PromptGenerationResult, ChannelStrategyResult, extractCharacters, CharacterDetail, analyzeAndSuggestStyle, StyleRecommendation } from './services/geminiService';
+import { Upload, FileText, Copy, Check, Loader2, Sparkles, Download, Palette, Video, Image as ImageIcon, Trash2, User, BookOpen, Calculator, History as HistoryIcon, Clock, Plus, ArrowRight, Wand2, LogOut, KeyRound, ShieldAlert, Stethoscope, ScrollText } from 'lucide-react';
+import { generatePrompts, generateVideoPrompts, estimateAmericanTalePrompts, generateAmericanTalePrompts, generateChannelStrategy, generateDeepScenePrompts, PromptGenerationResult, ChannelStrategyResult, extractCharacters, CharacterDetail, analyzeAndSuggestStyle, StyleRecommendation, enhanceScript, EnhancedScriptResult } from './services/geminiService';
 import { useAuth } from './contexts/AuthContext';
 import { collection, onSnapshot, addDoc, query, where, updateDoc, doc } from 'firebase/firestore';
 import { db } from './services/firebaseService';
@@ -39,7 +39,7 @@ export default function App() {
 
   const getWordCount = (text: string) => text.trim().split(/\s+/).filter(Boolean).length;
   const getCharCount = (text: string) => text.length;
-  const MAX_WORDS = 3000;
+  const MAX_WORDS = 4000;
 
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'api_keys'), (snapshot) => {
@@ -49,7 +49,9 @@ export default function App() {
       const allowedKeyIndex = keys.findIndex(k => k.assignedTo === user?.email || isAdmin);
       const initialKey = allowedKeyIndex >= 0 ? keys[allowedKeyIndex] : undefined;
 
-      if (keys.length > 0 && !selectedApiKey) {
+      const isMainAdmin = user?.email === 'frazcheema82@gmail.com';
+
+      if (keys.length > 0 && !selectedApiKey && !isMainAdmin) {
         setSelectedApiKey(initialKey?.keyValue || '');
       }
     }, (err) => {
@@ -72,6 +74,9 @@ export default function App() {
   const [appliedStyle, setAppliedStyle] = useState('');
   
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generateStatus, setGenerateStatus] = useState('');
+  const [generateProgress, setGenerateProgress] = useState(0);
+  const generateAbortRef = useRef<boolean>(false);
   const [result, setResult] = useState<PromptGenerationResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   
@@ -90,13 +95,27 @@ export default function App() {
   // --- CHARACTER EXTRACTION & UPLOAD (IMAGE PROMPTS) ---
   const [extractedChars, setExtractedChars] = useState<CharacterDetail[] | null>(null);
   const [isExtractingChars, setIsExtractingChars] = useState(false);
+  const [extractStatus, setExtractStatus] = useState('');
+  const [extractProgress, setExtractProgress] = useState(0);
+  const extractAbortRef = useRef<boolean>(false);
   const [charExtractError, setCharExtractError] = useState<string | null>(null);
   const [uploadedChars, setUploadedChars] = useState<UploadCharacterData[]>([]);
 
   // --- STYLE RECOMMENDATION ---
   const [styleRecommendation, setStyleRecommendation] = useState<StyleRecommendation | null>(null);
   const [isAnalyzingStyle, setIsAnalyzingStyle] = useState(false);
+  const [styleStatus, setStyleStatus] = useState('');
+  const [styleProgress, setStyleProgress] = useState(0);
+  const styleAbortRef = useRef<boolean>(false);
   const [styleAnalysisError, setStyleAnalysisError] = useState<string | null>(null);
+
+  // --- AI DOCTOR (SCRIPT ENHANCER) ---
+  const [isEnhancingScript, setIsEnhancingScript] = useState(false);
+  const [enhanceStatus, setEnhanceStatus] = useState('');
+  const [enhanceProgress, setEnhanceProgress] = useState(0);
+  const enhanceAbortRef = useRef<boolean>(false);
+  const [enhanceError, setEnhanceError] = useState<string | null>(null);
+  const [enhancedResult, setEnhancedResult] = useState<EnhancedScriptResult | null>(null);
 
   // --- HISTORY STATE ---
   const [history, setHistory] = useState<HistoryItem[]>([]);
@@ -179,6 +198,9 @@ export default function App() {
   const [characterText, setCharacterText] = useState('');
   
   const [isVideoGenerating, setIsVideoGenerating] = useState(false);
+  const [videoStatus, setVideoStatus] = useState('');
+  const [videoProgress, setVideoProgress] = useState(0);
+  const videoAbortRef = useRef<boolean>(false);
   const [videoResult, setVideoResult] = useState<PromptGenerationResult | null>(null);
   const [videoError, setVideoError] = useState<string | null>(null);
   
@@ -200,8 +222,14 @@ export default function App() {
   
   const [americanAiEstimate, setAmericanAiEstimate] = useState<number | null>(null);
   const [isEstimating, setIsEstimating] = useState(false);
+  const [estimateStatus, setEstimateStatus] = useState('');
+  const [estimateProgress, setEstimateProgress] = useState(0);
+  const estimateAbortRef = useRef<boolean>(false);
   
   const [isAmericanGenerating, setIsAmericanGenerating] = useState(false);
+  const [americanStatus, setAmericanStatus] = useState('');
+  const [americanProgress, setAmericanProgress] = useState(0);
+  const americanAbortRef = useRef<boolean>(false);
   const [americanResult, setAmericanResult] = useState<PromptGenerationResult | null>(null);
   const [americanError, setAmericanError] = useState<string | null>(null);
   
@@ -224,6 +252,26 @@ export default function App() {
   const channelResultRef = useRef<HTMLElement>(null);
   const [isUploadingOnline, setIsUploadingOnline] = useState(false);
   
+  const getEffectiveApiKey = () => {
+    const isAdminUser = profile?.role === 'admin' || profile?.isAdmin || isAdmin || user?.email === 'frazcheema82@gmail.com';
+    
+    // If Admin specifically selected a key, try to use it
+    if (selectedApiKey) {
+      const allowedKey = availableKeys.find(k => k.keyValue === selectedApiKey && (k.assignedTo === user?.email || isAdminUser));
+      if (allowedKey) return allowedKey.keyValue;
+    }
+
+    // If Admin didn't select a key or selection invalid, but is Admin, allow using developer key (undefined)
+    if (isAdminUser) return undefined;
+
+    // For regular users, must have selected a valid assigned key
+    const allowedKey = availableKeys.find(k => k.keyValue === selectedApiKey && k.assignedTo === user?.email);
+    if (!selectedApiKey || !allowedKey) {
+      throw new Error("Please select a valid assigned API Key first. Only an Admin can assign you an API Key.");
+    }
+    return allowedKey.keyValue;
+  };
+
   const [savedChannels, setSavedChannels] = useState<SavedChannel[]>(() => {
     const saved = localStorage.getItem('saved_channels');
     return saved ? JSON.parse(saved) : [];
@@ -305,17 +353,61 @@ export default function App() {
     }
 
     setIsExtractingChars(true);
+    setExtractStatus('Preparing script...');
+    setExtractProgress(10);
     setCharExtractError(null);
+    extractAbortRef.current = false;
+
     try {
-      const allowedKey = availableKeys.find(k => k.keyValue === selectedApiKey && (k.assignedTo === user?.email || isAdmin));
-      if (!selectedApiKey || !allowedKey) throw new Error("Please select a valid assigned API Key first. Only an Admin can assign you an API Key.");
-      const result = await extractCharacters(title, script, finalStyle, selectedApiKey);
+      const updateProgress = (step: string, progress: number) => {
+        if (!extractAbortRef.current) {
+          setExtractStatus(step);
+          setExtractProgress(progress);
+        }
+      };
+
+      updateProgress('Reading script details...', 20);
+      await new Promise(r => setTimeout(r, 600));
+      if (extractAbortRef.current) return;
+
+      updateProgress('Analyzing characters and relationships...', 40);
+      const effectiveKey = getEffectiveApiKey();
+      
+      const extractionPromise = extractCharacters(title, script, finalStyle, effectiveKey);
+      
+      // Simulate progress while waiting for API
+      const interval = setInterval(() => {
+        setExtractProgress(p => p < 90 ? p + 2 : p);
+      }, 500);
+
+      const result = await extractionPromise;
+      clearInterval(interval);
+
+      if (extractAbortRef.current) return;
+      
+      updateProgress('Formatting character sheets...', 95);
+      await new Promise(r => setTimeout(r, 400));
+      
+      if (extractAbortRef.current) return;
       setExtractedChars(result);
+      setExtractStatus('Done!');
+      setExtractProgress(100);
     } catch (err) {
-      setCharExtractError(err instanceof Error ? err.message : 'Unknown error during extraction.');
+      if (!extractAbortRef.current) {
+        setCharExtractError(err instanceof Error ? err.message : 'Unknown error during extraction.');
+      }
     } finally {
-      setIsExtractingChars(false);
+      if (!extractAbortRef.current) {
+        setIsExtractingChars(false);
+      }
     }
+  };
+
+  const handleStopExtracting = () => {
+    extractAbortRef.current = true;
+    setIsExtractingChars(false);
+    setExtractStatus('Stopped');
+    setExtractProgress(0);
   };
 
   const handleAnalyzeStyle = async () => {
@@ -324,17 +416,149 @@ export default function App() {
       return;
     }
     setIsAnalyzingStyle(true);
+    setStyleStatus('Scanning script narrative...');
+    setStyleProgress(15);
     setStyleAnalysisError(null);
+    styleAbortRef.current = false;
+
     try {
-      const allowedKey = availableKeys.find(k => k.keyValue === selectedApiKey && (k.assignedTo === user?.email || isAdmin));
-      if (!selectedApiKey || !allowedKey) throw new Error("Please select a valid assigned API Key first. Only an Admin can assign you an API Key.");
-      const result = await analyzeAndSuggestStyle(title, script, selectedApiKey);
+      const updateProgress = (step: string, progress: number) => {
+        if (!styleAbortRef.current) {
+          setStyleStatus(step);
+          setStyleProgress(progress);
+        }
+      };
+
+      updateProgress('Identifying key themes...', 35);
+      await new Promise(r => setTimeout(r, 600));
+      if (styleAbortRef.current) return;
+
+      updateProgress('Recommending visual aesthetics...', 60);
+      const effectiveKey = getEffectiveApiKey();
+      
+      const analysisPromise = analyzeAndSuggestStyle(title, script, effectiveKey);
+      
+      const interval = setInterval(() => {
+        setStyleProgress(p => p < 95 ? p + 5 : p);
+      }, 400);
+
+      const result = await analysisPromise;
+      clearInterval(interval);
+
+      if (styleAbortRef.current) return;
+      
       setStyleRecommendation(result);
+      setStyleStatus('Done!');
+      setStyleProgress(100);
     } catch (err) {
-      setStyleAnalysisError(err instanceof Error ? err.message : 'Unknown error during style analysis.');
+      if (!styleAbortRef.current) {
+        setStyleAnalysisError(err instanceof Error ? err.message : 'Unknown error during style analysis.');
+      }
     } finally {
-      setIsAnalyzingStyle(false);
+      if (!styleAbortRef.current) {
+        setIsAnalyzingStyle(false);
+      }
     }
+  };
+
+  const handleStopAnalyzingStyle = () => {
+    styleAbortRef.current = true;
+    setIsAnalyzingStyle(false);
+    setStyleStatus('Stopped');
+    setStyleProgress(0);
+  };
+
+  const handleEnhanceScript = async (target: 'image' | 'video' | 'american') => {
+    let currentTitle = '';
+    let currentScript = '';
+    let setScriptFn: (s: string) => void = () => {};
+
+    if (target === 'image') {
+      currentTitle = title;
+      currentScript = script;
+      setScriptFn = setScript;
+    } else if (target === 'video') {
+      currentTitle = videoTitle;
+      currentScript = videoScript;
+      setScriptFn = setVideoScript;
+    } else if (target === 'american') {
+      currentTitle = americanTitle;
+      currentScript = americanScript;
+      setScriptFn = setAmericanScript;
+    }
+
+    if (!currentTitle.trim() || !currentScript.trim()) {
+      setEnhanceError('Please provide both a title and script first.');
+      return;
+    }
+    
+    setIsEnhancingScript(true);
+    setEnhanceStatus('Diagnosing script...');
+    setEnhanceProgress(10);
+    setEnhanceError(null);
+    setEnhancedResult(null);
+    enhanceAbortRef.current = false;
+
+    try {
+      const updateProgress = (step: string, progress: number) => {
+        if (!enhanceAbortRef.current) {
+          setEnhanceStatus(step);
+          setEnhanceProgress(progress);
+        }
+      };
+
+      updateProgress('Identifying YouTube niche & trends...', 25);
+      await new Promise(r => setTimeout(r, 800));
+      if (enhanceAbortRef.current) return;
+
+      updateProgress('Applying virality framework...', 45);
+      const effectiveKey = getEffectiveApiKey();
+      
+      const enhancementPromise = enhanceScript(currentTitle, currentScript, effectiveKey);
+      
+      const interval = setInterval(() => {
+        setEnhanceProgress(p => p < 92 ? p + 2 : p);
+      }, 700);
+
+      const result = await enhancementPromise;
+      clearInterval(interval);
+
+      if (enhanceAbortRef.current) return;
+      
+      updateProgress('Refinement & Anti-Slop polishing...', 95);
+      await new Promise(r => setTimeout(r, 600));
+      
+      if (enhanceAbortRef.current) return;
+      
+      setEnhancedResult(result);
+      setScriptFn(result.enhancedScript); // Automatically replace the script
+      setEnhanceStatus('Script Enhanced Successfully!');
+      setEnhanceProgress(100);
+      
+      // Auto clear success status after 5 seconds
+      setTimeout(() => {
+        if (!enhanceAbortRef.current) {
+          setEnhanceStatus('');
+          setEnhanceProgress(0);
+        }
+      }, 5000);
+      
+    } catch (err) {
+      if (!enhanceAbortRef.current) {
+        setEnhanceError(err instanceof Error ? err.message : 'Unknown error during script enhancement.');
+      }
+    } finally {
+      if (!enhanceAbortRef.current) {
+        setIsEnhancingScript(false);
+      }
+    }
+  };
+
+  const handleStopEnhancing = () => {
+    enhanceAbortRef.current = true;
+    setIsEnhancingScript(false);
+    setEnhanceStatus('Stopped');
+    setEnhanceProgress(0);
   };
 
   const applySuggestedStyle = () => {
@@ -403,10 +627,21 @@ export default function App() {
     }
 
     setIsGenerating(true);
+    setGenerateStatus('Starting generation...');
+    setGenerateProgress(5);
     setError(null);
     setResult(null);
+    generateAbortRef.current = false;
 
     try {
+      const updateProgress = (step: string, progress: number) => {
+        if (!generateAbortRef.current) {
+          setGenerateStatus(step);
+          setGenerateProgress(progress);
+        }
+      };
+
+      updateProgress('Processing character visuals...', 15);
       const uploadedCharsPayload = await Promise.all(uploadedChars.map(async (c) => {
          let base64 = '';
          let mimeType = '';
@@ -426,26 +661,56 @@ export default function App() {
          };
       }));
 
-      const allowedKey = availableKeys.find(k => k.keyValue === selectedApiKey && (k.assignedTo === user?.email || isAdmin));
-      if (!selectedApiKey || !allowedKey) throw new Error("Please select a valid assigned API Key first. Only an Admin can assign you an API Key.");
-      const generatedResult = await generatePrompts(
+      if (generateAbortRef.current) return;
+      updateProgress('Building scene storyboard...', 30);
+      await new Promise(r => setTimeout(r, 1000));
+      
+      if (generateAbortRef.current) return;
+      updateProgress('Calling Gemini AI...', 50);
+
+      const effectiveKey = getEffectiveApiKey();
+      const generationPromise = generatePrompts(
         title, 
         script, 
         finalStyle, 
         uploadedCharsPayload,
         { enableSceneDetection, enableEmotionAnalysis, targetAI },
-        selectedApiKey
+        effectiveKey
       );
+
+      const interval = setInterval(() => {
+        setGenerateProgress(p => p < 95 ? p + 2 : p);
+      }, 1000);
+
+      const generatedResult = await generationPromise;
+      clearInterval(interval);
+
+      if (generateAbortRef.current) return;
+      
+      updateProgress('Completing final prompts...', 98);
       setResult(generatedResult);
       setAppliedStyle(finalStyle);
       saveToHistory({ type: 'image', title, style: finalStyle, result: generatedResult });
+      setGenerateStatus('Done!');
+      setGenerateProgress(100);
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : "An unknown error occurred.";
-      setError(errMsg);
-      saveToHistory({ type: 'image', title, style: finalStyle || 'Unknown', result: { prompts: [] }, error: errMsg });
+      if (!generateAbortRef.current) {
+        const errMsg = err instanceof Error ? err.message : "An unknown error occurred.";
+        setError(errMsg);
+        saveToHistory({ type: 'image', title, style: finalStyle || 'Unknown', result: { prompts: [] }, error: errMsg });
+      }
     } finally {
-      setIsGenerating(false);
+      if (!generateAbortRef.current) {
+        setIsGenerating(false);
+      }
     }
+  };
+
+  const handleStopGenerating = () => {
+    generateAbortRef.current = true;
+    setIsGenerating(false);
+    setGenerateStatus('Stopped');
+    setGenerateProgress(0);
   };
 
   const copyToClipboard = (text: string, index: number) => {
@@ -528,38 +793,75 @@ export default function App() {
     }
 
     setIsVideoGenerating(true);
+    setVideoStatus('Processing video narrative...');
+    setVideoProgress(10);
     setVideoError(null);
     setVideoResult(null);
+    videoAbortRef.current = false;
 
     try {
+      const updateProgress = (step: string, progress: number) => {
+        if (!videoAbortRef.current) {
+          setVideoStatus(step);
+          setVideoProgress(progress);
+        }
+      };
+
       let base64Image: string | undefined;
       let mimeType: string | undefined;
       if (characterMode === 'image' && characterImagePreview && characterImageFile) {
+        updateProgress('Analyzing character features...', 25);
         base64Image = characterImagePreview;
         mimeType = characterImageFile.type;
       }
       
-      const allowedKey = availableKeys.find(k => k.keyValue === selectedApiKey && (k.assignedTo === user?.email || isAdmin));
-      if (!selectedApiKey || !allowedKey) throw new Error("Please select a valid assigned API Key first. Only an Admin can assign you an API Key.");
-      const generatedResult = await generateVideoPrompts(
+      if (videoAbortRef.current) return;
+      updateProgress('Generating cinematic storyboard...', 40);
+
+      const effectiveKey = getEffectiveApiKey();
+      const generationPromise = generateVideoPrompts(
         videoTitle, 
         videoScript, 
         finalStyle, 
         characterMode, 
         characterMode === 'text' ? characterText : base64Image,
         mimeType,
-        selectedApiKey
+        effectiveKey
       );
+
+      const interval = setInterval(() => {
+        setVideoProgress(p => p < 95 ? p + 2 : p);
+      }, 1000);
+
+      const generatedResult = await generationPromise;
+      clearInterval(interval);
+
+      if (videoAbortRef.current) return;
+      
+      updateProgress('Finalizing video sequence...', 98);
       setVideoResult(generatedResult);
       setVideoAppliedStyle(finalStyle);
       saveToHistory({ type: 'video', title: videoTitle, style: finalStyle, result: generatedResult });
+      setVideoStatus('Done!');
+      setVideoProgress(100);
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : "An unknown error occurred.";
-      setVideoError(errMsg);
-      saveToHistory({ type: 'video', title: videoTitle, style: finalStyle || 'Unknown', result: { prompts: [] }, error: errMsg });
+      if (!videoAbortRef.current) {
+        const errMsg = err instanceof Error ? err.message : "An unknown error occurred.";
+        setVideoError(errMsg);
+        saveToHistory({ type: 'video', title: videoTitle, style: finalStyle || 'Unknown', result: { prompts: [] }, error: errMsg });
+      }
     } finally {
-      setIsVideoGenerating(false);
+      if (!videoAbortRef.current) {
+        setIsVideoGenerating(false);
+      }
     }
+  };
+
+  const handleStopVideoGenerate = () => {
+    videoAbortRef.current = true;
+    setIsVideoGenerating(false);
+    setVideoStatus('Stopped');
+    setVideoProgress(0);
   };
 
   const copyVideoToClipboard = (text: string, index: number) => {
@@ -617,21 +919,54 @@ export default function App() {
     }
 
     setIsEstimating(true);
+    setEstimateStatus('Scanning historical context...');
+    setEstimateProgress(15);
     setAmericanError(null);
     setAmericanAiEstimate(null);
+    estimateAbortRef.current = false;
     
     try {
-      const allowedKey = availableKeys.find(k => k.keyValue === selectedApiKey && (k.assignedTo === user?.email || isAdmin));
-      if (!selectedApiKey || !allowedKey) throw new Error("Please select a valid assigned API Key first. Only an Admin can assign you an API Key.");
-      const count = await estimateAmericanTalePrompts(americanTitle, americanScript, americanEra, selectedApiKey);
+      const updateProgress = (step: string, progress: number) => {
+        if (!estimateAbortRef.current) {
+          setEstimateStatus(step);
+          setEstimateProgress(progress);
+        }
+      };
+
+      updateProgress('Calculating key visual anchor points...', 45);
+      const effectiveKey = getEffectiveApiKey();
+      const countPromise = estimateAmericanTalePrompts(americanTitle, americanScript, americanEra, effectiveKey);
+      
+      const interval = setInterval(() => {
+        setEstimateProgress(p => p < 90 ? p + 5 : p);
+      }, 500);
+
+      const count = await countPromise;
+      clearInterval(interval);
+
+      if (estimateAbortRef.current) return;
+
       setAmericanAiEstimate(count);
+      setEstimateStatus('Done!');
+      setEstimateProgress(100);
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : "Failed to estimate.";
-      setAmericanError(errMsg);
-      saveToHistory({ type: 'american', title: americanTitle, style: `Ultra-Realistic Historical (${americanEra})`, count: 0, result: { prompts: [] }, error: `Estimation Error: ${errMsg}` });
+      if (!estimateAbortRef.current) {
+        const errMsg = err instanceof Error ? err.message : "Failed to estimate.";
+        setAmericanError(errMsg);
+        saveToHistory({ type: 'american', title: americanTitle, style: `Ultra-Realistic Historical (${americanEra})`, count: 0, result: { prompts: [] }, error: `Estimation Error: ${errMsg}` });
+      }
     } finally {
-      setIsEstimating(false);
+      if (!estimateAbortRef.current) {
+        setIsEstimating(false);
+      }
     }
+  };
+
+  const handleStopEstimate = () => {
+    estimateAbortRef.current = true;
+    setIsEstimating(false);
+    setEstimateStatus('Stopped');
+    setEstimateProgress(0);
   };
 
   const handleAmericanGenerate = async (count: number) => {
@@ -650,38 +985,66 @@ export default function App() {
     }
 
     setIsAmericanGenerating(true);
+    setAmericanStatus('Researching era authenticity...');
+    setAmericanProgress(10);
     setAmericanError(null);
     setAmericanResult(null);
+    americanAbortRef.current = false;
 
     try {
-      const allowedKey = availableKeys.find(k => k.keyValue === selectedApiKey && (k.assignedTo === user?.email || isAdmin));
-      if (!selectedApiKey || !allowedKey) throw new Error("Please select a valid assigned API Key first. Only an Admin can assign you an API Key.");
-      const generatedResult = await generateAmericanTalePrompts(americanTitle, americanScript, americanEra, count, selectedApiKey);
+      const updateProgress = (step: string, progress: number) => {
+        if (!americanAbortRef.current) {
+          setAmericanStatus(step);
+          setAmericanProgress(progress);
+        }
+      };
+
+      updateProgress('Building realistic scene prompts...', 35);
+      const effectiveKey = getEffectiveApiKey();
+      const generationPromise = generateAmericanTalePrompts(americanTitle, americanScript, americanEra, count, effectiveKey);
+      
+      const interval = setInterval(() => {
+        setAmericanProgress(p => p < 95 ? p + 2 : p);
+      }, 1500);
+
+      const generatedResult = await generationPromise;
+      clearInterval(interval);
+
+      if (americanAbortRef.current) return;
+
+      updateProgress('Polishing historical storyboard...', 98);
       setAmericanResult(generatedResult);
       saveToHistory({ type: 'american', title: americanTitle, style: `Ultra-Realistic Historical (${americanEra})`, count, result: generatedResult });
+      setAmericanStatus('Done!');
+      setAmericanProgress(100);
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : "An unknown error occurred.";
-      setAmericanError(errMsg);
-      saveToHistory({ type: 'american', title: americanTitle, style: `Ultra-Realistic Historical (${americanEra})`, count: count, result: { prompts: [] }, error: errMsg });
+      if (!americanAbortRef.current) {
+        const errMsg = err instanceof Error ? err.message : "An unknown error occurred.";
+        setAmericanError(errMsg);
+        saveToHistory({ type: 'american', title: americanTitle, style: `Ultra-Realistic Historical (${americanEra})`, count: count, result: { prompts: [] }, error: errMsg });
+      }
     } finally {
-      setIsAmericanGenerating(false);
+      if (!americanAbortRef.current) {
+        setIsAmericanGenerating(false);
+      }
     }
+  };
+
+  const handleStopAmericanGenerate = () => {
+    americanAbortRef.current = true;
+    setIsAmericanGenerating(false);
+    setAmericanStatus('Stopped');
+    setAmericanProgress(0);
   };
 
   // --- CHANNEL PLANNER HANDLERS ---
   const handleGenerateChannelPlan = async () => {
-    if (!channelNiche.trim() || !channelScripts.trim()) {
-      setChannelError("Please provide all required fields.");
-      return;
-    }
-
     setIsChannelGenerating(true);
     setChannelError(null);
     setChannelResult(null);
 
     try {
-      const allowedKey = availableKeys.find(k => k.keyValue === selectedApiKey && (k.assignedTo === user?.email || isAdmin));
-      if (!selectedApiKey || !allowedKey) throw new Error("Please select a valid assigned API Key first. Only an Admin can assign you an API Key.");
+      const effectiveKey = getEffectiveApiKey();
       
       const generatedResult = await generateChannelStrategy(
         channelResearch,
@@ -689,7 +1052,7 @@ export default function App() {
         channelData,
         channelTitles,
         channelScripts,
-        selectedApiKey
+        effectiveKey
       );
       
       const newChannel: SavedChannel = {
@@ -730,11 +1093,6 @@ export default function App() {
   };
 
   const handleGenerateDeepScenePrompts = async (stylePrefix: string) => {
-    if (!deepVideoTitle.trim() || !deepVideoScript.trim()) {
-      setDeepError("Please provide both a Video Title and Video Script.");
-      return;
-    }
-    
     const selectedChannel = savedChannels.find(c => c.id === selectedChannelId);
     if (!selectedChannel) {
       setDeepError("Please select a valid Channel Strategy.");
@@ -746,8 +1104,7 @@ export default function App() {
     setDeepResult(null);
 
     try {
-      const allowedKey = availableKeys.find(k => k.keyValue === selectedApiKey && (k.assignedTo === user?.email || isAdmin));
-      if (!selectedApiKey || !allowedKey) throw new Error("Please select a valid assigned API Key first. Only an Admin can assign you an API Key.");
+      const effectiveKey = getEffectiveApiKey();
       
       const generatedResult = await generateDeepScenePrompts(
         selectedChannel.strategy,
@@ -755,7 +1112,7 @@ export default function App() {
         deepVideoTitle,
         deepVideoScript,
         deepTargetCount,
-        selectedApiKey
+        effectiveKey
       );
       
       setDeepResult(generatedResult);
@@ -1201,24 +1558,109 @@ export default function App() {
                     </div>
                   )}
 
-                  <div className="flex flex-wrap gap-3">
-                    <button
-                      onClick={handleExtractCharacters}
-                      disabled={isExtractingChars || !title.trim() || !script.trim()}
-                      className="flex items-center gap-2 px-5 py-2.5 bg-gray-900 hover:bg-gray-800 disabled:bg-gray-400 text-white rounded-lg text-sm font-semibold transition-colors shadow-sm"
-                    >
-                      {isExtractingChars ? <Loader2 className="w-4 h-4 animate-spin" /> : <User className="w-4 h-4" />}
-                      {isExtractingChars ? "Extracting Characters..." : "Fetch Characters & Details"}
-                    </button>
+                  <div className="flex flex-col gap-3 w-full">
+                    <div className="flex flex-wrap gap-3">
+                      <div className="flex flex-col gap-1 flex-1 min-w-[200px]">
+                        <button
+                          onClick={handleExtractCharacters}
+                          disabled={isExtractingChars || !title.trim() || !script.trim()}
+                          className="w-full flex items-center justify-center gap-2 px-5 py-2.5 bg-gray-900 hover:bg-gray-800 disabled:bg-gray-400 text-white rounded-lg text-sm font-semibold transition-colors shadow-sm relative group"
+                        >
+                          {isExtractingChars ? <Loader2 className="w-4 h-4 animate-spin" /> : <User className="w-4 h-4" />}
+                          {isExtractingChars ? "Extracting..." : "Fetch Characters & Details"}
+                        </button>
+                        {isExtractingChars && (
+                          <button 
+                            onClick={handleStopExtracting}
+                            className="text-[10px] text-red-500 hover:text-red-600 font-bold uppercase text-center mt-1"
+                          >
+                            Stop Extraction
+                          </button>
+                        )}
+                      </div>
 
-                    <button
-                      onClick={handleAnalyzeStyle}
-                      disabled={isAnalyzingStyle || !title.trim() || !script.trim()}
-                      className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white rounded-lg text-sm font-semibold transition-colors shadow-sm"
-                    >
-                      {isAnalyzingStyle ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
-                      {isAnalyzingStyle ? "Analyzing Script..." : "Analyze & Suggest Best Style"}
-                    </button>
+                      <div className="flex flex-col gap-1 flex-1 min-w-[200px]">
+                        <button
+                          onClick={handleAnalyzeStyle}
+                          disabled={isAnalyzingStyle || !title.trim() || !script.trim()}
+                          className="w-full flex items-center justify-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white rounded-lg text-sm font-semibold transition-colors shadow-sm relative group"
+                        >
+                          {isAnalyzingStyle ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
+                          {isAnalyzingStyle ? "Analyzing..." : "Analyze & Suggest Best Style"}
+                        </button>
+                        {isAnalyzingStyle && (
+                          <button 
+                            onClick={handleStopAnalyzingStyle}
+                            className="text-[10px] text-red-500 hover:text-red-600 font-bold uppercase text-center mt-1"
+                          >
+                            Stop Analysis
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="flex flex-col gap-1 flex-1 min-w-[200px]">
+                        <button
+                          onClick={() => handleEnhanceScript('image')}
+                          disabled={isEnhancingScript || !title.trim() || !script.trim()}
+                          className="w-full flex items-center justify-center gap-2 px-5 py-2.5 bg-rose-600 hover:bg-rose-700 disabled:bg-rose-300 text-white rounded-lg text-sm font-semibold transition-colors shadow-sm relative group"
+                        >
+                          {isEnhancingScript ? <Loader2 className="w-4 h-4 animate-spin" /> : <Stethoscope className="w-4 h-4" />}
+                          {isEnhancingScript ? "Doctor at Work..." : "AI Doctor: Polish & Viral Fix"}
+                        </button>
+                        {isEnhancingScript && (
+                          <button 
+                            onClick={handleStopEnhancing}
+                            className="text-[10px] text-red-500 hover:text-red-600 font-bold uppercase text-center mt-1"
+                          >
+                            Stop Doctor
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Overall Tool Progress for Mini Modules */}
+                    {(isExtractingChars || isAnalyzingStyle || isEnhancingScript) && (
+                      <div className="w-full space-y-2 py-2 animate-in fade-in slide-in-from-top-1">
+                        <div className="flex justify-between items-end">
+                          <span className="text-xs font-bold text-indigo-600 animate-pulse">
+                            {isExtractingChars ? extractStatus : isAnalyzingStyle ? styleStatus : enhanceStatus}
+                          </span>
+                          <span className="text-xs font-mono text-gray-500">
+                            {isExtractingChars ? extractProgress : isAnalyzingStyle ? styleProgress : enhanceProgress}%
+                          </span>
+                        </div>
+                        <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                          <div 
+                            className="h-full bg-indigo-600 transition-all duration-500 ease-out" 
+                            style={{ width: `${isExtractingChars ? extractProgress : isAnalyzingStyle ? styleProgress : enhanceProgress}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {enhancedResult && !isEnhancingScript && (
+                      <div className="w-full p-4 bg-emerald-50 border border-emerald-100 rounded-xl space-y-2 animate-in slide-in-from-bottom-2">
+                        <div className="flex items-center gap-2 text-emerald-700">
+                          <Sparkles className="w-4 h-4" />
+                          <h4 className="text-sm font-bold">Script Diagnosis Complete</h4>
+                        </div>
+                        <p className="text-xs text-emerald-600 italic">Your script has been polished for YouTube virality. The original has been replaced.</p>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          <div className="bg-white p-2 rounded-lg border border-emerald-100">
+                            <span className="text-[10px] text-gray-400 font-bold uppercase block">Niche</span>
+                            <span className="text-sm font-semibold text-gray-700">{enhancedResult.niche}</span>
+                          </div>
+                          <div className="bg-white p-2 rounded-lg border border-emerald-100">
+                            <span className="text-[10px] text-gray-400 font-bold uppercase block">Sub-Niche</span>
+                            <span className="text-sm font-semibold text-gray-700">{enhancedResult.subNiche}</span>
+                          </div>
+                          <div className="bg-white p-2 rounded-lg border border-emerald-100">
+                            <span className="text-[10px] text-gray-400 font-bold uppercase block">Micro-Niche</span>
+                            <span className="text-sm font-semibold text-gray-700">{enhancedResult.microNiche}</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Style Recommendation Display */}
@@ -1515,30 +1957,62 @@ export default function App() {
             </section>
 
             {/* Action Section */}
-            <div className="flex flex-col items-center gap-4">
+            <div className="flex flex-col items-center gap-4 w-full">
               {error && (
                 <div className="w-full p-4 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm">
                   {error}
                 </div>
               )}
               
-              <button
-                onClick={handleGenerate}
-                disabled={isGenerating || !title.trim() || !script.trim()}
-                className="w-full sm:w-auto px-8 py-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 disabled:cursor-not-allowed text-white rounded-xl font-semibold shadow-sm hover:shadow-md transition-all flex items-center justify-center gap-2 text-lg"
-              >
-                {isGenerating ? (
-                  <>
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                    Analyzing & Generating...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-5 h-5" />
-                    Generate Image Prompts
-                  </>
+              <div className="w-full max-w-xl space-y-4">
+                <button
+                  onClick={handleGenerate}
+                  disabled={isGenerating || !title.trim() || !script.trim()}
+                  className="w-full px-8 py-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 disabled:cursor-not-allowed text-white rounded-xl font-semibold shadow-sm hover:shadow-md transition-all flex items-center justify-center gap-2 text-lg relative overflow-hidden"
+                >
+                  {isGenerating ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      Generating Storyboard...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-5 h-5" />
+                      Generate Image Prompts
+                    </>
+                  )}
+                </button>
+
+                {isGenerating && (
+                  <div className="space-y-3 p-4 bg-white border border-indigo-100 rounded-2xl shadow-sm animate-in zoom-in-95 duration-300">
+                    <div className="flex justify-between items-center px-1">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 bg-indigo-600 rounded-full animate-ping" />
+                        <span className="text-sm font-bold text-gray-800">{generateStatus}</span>
+                      </div>
+                      <span className="text-sm font-mono font-bold text-indigo-600">{generateProgress}%</span>
+                    </div>
+                    
+                    <div className="w-full h-3 bg-gray-100 rounded-full overflow-hidden border border-gray-50">
+                      <div 
+                        className="h-full bg-gradient-to-r from-indigo-500 to-violet-600 transition-all duration-700 ease-in-out" 
+                        style={{ width: `${generateProgress}%` }}
+                      />
+                    </div>
+
+                    <div className="flex justify-between items-center">
+                      <p className="text-[10px] text-gray-400 font-medium italic">Processing large scripts may take up to 60 seconds...</p>
+                      <button
+                        onClick={handleStopGenerating}
+                        className="flex items-center gap-1.5 px-3 py-1 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg text-xs font-bold transition-colors border border-red-100"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        Stop Generation
+                      </button>
+                    </div>
+                  </div>
                 )}
-              </button>
+              </div>
             </div>
 
             {/* Results Section */}
@@ -1714,6 +2188,84 @@ export default function App() {
                       </span>
                     </div>
                   </div>
+
+                  {/* AI DOCTOR Section (Video) */}
+                  <div className="pt-4 border-t border-gray-100 flex flex-col items-start gap-4">
+                    <p className="text-sm text-gray-600 font-medium">Looking for virality optimization? Let AI help you.</p>
+                    
+                    {enhanceError && activeTab === 'video' && (
+                      <div className="w-full p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm">
+                        {enhanceError}
+                      </div>
+                    )}
+
+                    <div className="flex flex-col gap-3 w-full">
+                      <div className="flex flex-wrap gap-3">
+                        <div className="flex flex-col gap-1 flex-1 min-w-[200px]">
+                          <button
+                            onClick={() => handleEnhanceScript('video')}
+                            disabled={isEnhancingScript || !videoTitle.trim() || !videoScript.trim()}
+                            className="w-full flex items-center justify-center gap-2 px-5 py-2.5 bg-rose-600 hover:bg-rose-700 disabled:bg-rose-300 text-white rounded-lg text-sm font-semibold transition-colors shadow-sm relative group"
+                          >
+                            {isEnhancingScript ? <Loader2 className="w-4 h-4 animate-spin" /> : <Stethoscope className="w-4 h-4" />}
+                            {isEnhancingScript ? "Doctor at Work..." : "AI Doctor: Polish & Viral Fix"}
+                          </button>
+                          {isEnhancingScript && (
+                            <button 
+                              onClick={handleStopEnhancing}
+                              className="text-[10px] text-red-500 hover:text-red-600 font-bold uppercase text-center mt-1"
+                            >
+                              Stop Doctor
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Overall Tool Progress for Mini Modules */}
+                      {isEnhancingScript && activeTab === 'video' && (
+                        <div className="w-full space-y-2 py-2 animate-in fade-in slide-in-from-top-1">
+                          <div className="flex justify-between items-end">
+                            <span className="text-xs font-bold text-indigo-600 animate-pulse">
+                              {enhanceStatus}
+                            </span>
+                            <span className="text-xs font-mono text-gray-500">
+                              {enhanceProgress}%
+                            </span>
+                          </div>
+                          <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                            <div 
+                              className="h-full bg-indigo-600 transition-all duration-500 ease-out" 
+                              style={{ width: `${enhanceProgress}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {enhancedResult && !isEnhancingScript && activeTab === 'video' && (
+                        <div className="w-full p-4 bg-emerald-50 border border-emerald-100 rounded-xl space-y-2 animate-in slide-in-from-bottom-2">
+                          <div className="flex items-center gap-2 text-emerald-700">
+                            <Sparkles className="w-4 h-4" />
+                            <h4 className="text-sm font-bold">Script Diagnosis Complete</h4>
+                          </div>
+                          <p className="text-xs text-emerald-600 italic">Your script has been polished for YouTube virality. The original has been replaced.</p>
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            <div className="bg-white p-2 rounded-lg border border-emerald-100">
+                              <span className="text-[10px] text-gray-400 font-bold uppercase block">Niche</span>
+                              <span className="text-sm font-semibold text-gray-700">{enhancedResult.niche}</span>
+                            </div>
+                            <div className="bg-white p-2 rounded-lg border border-emerald-100">
+                              <span className="text-[10px] text-gray-400 font-bold uppercase block">Sub-Niche</span>
+                              <span className="text-sm font-semibold text-gray-700">{enhancedResult.subNiche}</span>
+                            </div>
+                            <div className="bg-white p-2 rounded-lg border border-emerald-100">
+                              <span className="text-[10px] text-gray-400 font-bold uppercase block">Micro-Niche</span>
+                              <span className="text-sm font-semibold text-gray-700">{enhancedResult.microNiche}</span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
             </section>
@@ -1825,29 +2377,62 @@ export default function App() {
             </section>
 
             {/* Video Action Section */}
-            <div className="flex flex-col items-center gap-4">
+            <div className="flex flex-col items-center gap-4 w-full">
               {videoError && (
                 <div className="w-full p-4 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm">
                   {videoError}
                 </div>
               )}
-              <button
-                onClick={handleVideoGenerate}
-                disabled={isVideoGenerating || !videoTitle.trim() || !videoScript.trim()}
-                className="w-full sm:w-auto px-8 py-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 disabled:cursor-not-allowed text-white rounded-xl font-semibold shadow-sm hover:shadow-md transition-all flex items-center justify-center gap-2 text-lg"
-              >
-                {isVideoGenerating ? (
-                  <>
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                    Analyzing & Generating...
-                  </>
-                ) : (
-                  <>
-                    <Video className="w-5 h-5" />
-                    Generate Video Prompts
-                  </>
+              
+              <div className="w-full max-w-xl space-y-4">
+                <button
+                  onClick={handleVideoGenerate}
+                  disabled={isVideoGenerating || !videoTitle.trim() || !videoScript.trim()}
+                  className="w-full px-8 py-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 disabled:cursor-not-allowed text-white rounded-xl font-semibold shadow-sm hover:shadow-md transition-all flex items-center justify-center gap-2 text-lg relative overflow-hidden"
+                >
+                  {isVideoGenerating ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      Generating Video Storyboard...
+                    </>
+                  ) : (
+                    <>
+                      <Video className="w-5 h-5" />
+                      Generate Video Prompts
+                    </>
+                  )}
+                </button>
+
+                {isVideoGenerating && (
+                  <div className="space-y-3 p-4 bg-white border border-indigo-100 rounded-2xl shadow-sm animate-in zoom-in-95 duration-300">
+                    <div className="flex justify-between items-center px-1">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 bg-indigo-600 rounded-full animate-ping" />
+                        <span className="text-sm font-bold text-gray-800">{videoStatus}</span>
+                      </div>
+                      <span className="text-sm font-mono font-bold text-indigo-600">{videoProgress}%</span>
+                    </div>
+                    
+                    <div className="w-full h-3 bg-gray-100 rounded-full overflow-hidden border border-gray-50">
+                      <div 
+                        className="h-full bg-gradient-to-r from-indigo-500 to-violet-600 transition-all duration-700 ease-in-out" 
+                        style={{ width: `${videoProgress}%` }}
+                      />
+                    </div>
+
+                    <div className="flex justify-between items-center">
+                      <p className="text-[10px] text-gray-400 font-medium italic">Processing large scripts may take up to 60 seconds...</p>
+                      <button
+                        onClick={handleStopVideoGenerate}
+                        className="flex items-center gap-1.5 px-3 py-1 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg text-xs font-bold transition-colors border border-red-100"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        Stop Generation
+                      </button>
+                    </div>
+                  </div>
                 )}
-              </button>
+              </div>
             </div>
 
             {/* Video Results Section */}
@@ -1995,6 +2580,84 @@ export default function App() {
                       </span>
                     </div>
                   </div>
+
+                  {/* AI DOCTOR Section (American) */}
+                  <div className="pt-4 border-t border-gray-100 flex flex-col items-start gap-4">
+                    <p className="text-sm text-gray-600 font-medium">Looking for historical accuracy & virality? Let AI help you.</p>
+                    
+                    {enhanceError && activeTab === 'american' && (
+                      <div className="w-full p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm">
+                        {enhanceError}
+                      </div>
+                    )}
+
+                    <div className="flex flex-col gap-3 w-full">
+                      <div className="flex flex-wrap gap-3">
+                        <div className="flex flex-col gap-1 flex-1 min-w-[200px]">
+                          <button
+                            onClick={() => handleEnhanceScript('american')}
+                            disabled={isEnhancingScript || !americanTitle.trim() || !americanScript.trim()}
+                            className="w-full flex items-center justify-center gap-2 px-5 py-2.5 bg-rose-600 hover:bg-rose-700 disabled:bg-rose-300 text-white rounded-lg text-sm font-semibold transition-colors shadow-sm relative group"
+                          >
+                            {isEnhancingScript ? <Loader2 className="w-4 h-4 animate-spin" /> : <Stethoscope className="w-4 h-4" />}
+                            {isEnhancingScript ? "Doctor at Work..." : "AI Doctor: Polish & Viral Fix"}
+                          </button>
+                          {isEnhancingScript && (
+                            <button 
+                              onClick={handleStopEnhancing}
+                              className="text-[10px] text-red-500 hover:text-red-600 font-bold uppercase text-center mt-1"
+                            >
+                              Stop Doctor
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Overall Tool Progress for Mini Modules */}
+                      {isEnhancingScript && activeTab === 'american' && (
+                        <div className="w-full space-y-2 py-2 animate-in fade-in slide-in-from-top-1">
+                          <div className="flex justify-between items-end">
+                            <span className="text-xs font-bold text-indigo-600 animate-pulse">
+                              {enhanceStatus}
+                            </span>
+                            <span className="text-xs font-mono text-gray-500">
+                              {enhanceProgress}%
+                            </span>
+                          </div>
+                          <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                            <div 
+                              className="h-full bg-indigo-600 transition-all duration-500 ease-out" 
+                              style={{ width: `${enhanceProgress}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {enhancedResult && !isEnhancingScript && activeTab === 'american' && (
+                        <div className="w-full p-4 bg-emerald-50 border border-emerald-100 rounded-xl space-y-2 animate-in slide-in-from-bottom-2">
+                          <div className="flex items-center gap-2 text-emerald-700">
+                            <Sparkles className="w-4 h-4" />
+                            <h4 className="text-sm font-bold">Script Diagnosis Complete</h4>
+                          </div>
+                          <p className="text-xs text-emerald-600 italic">Your script has been polished for YouTube virality. The original has been replaced.</p>
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            <div className="bg-white p-2 rounded-lg border border-emerald-100">
+                              <span className="text-[10px] text-gray-400 font-bold uppercase block">Niche</span>
+                              <span className="text-sm font-semibold text-gray-700">{enhancedResult.niche}</span>
+                            </div>
+                            <div className="bg-white p-2 rounded-lg border border-emerald-100">
+                              <span className="text-[10px] text-gray-400 font-bold uppercase block">Sub-Niche</span>
+                              <span className="text-sm font-semibold text-gray-700">{enhancedResult.subNiche}</span>
+                            </div>
+                            <div className="bg-white p-2 rounded-lg border border-emerald-100">
+                              <span className="text-[10px] text-gray-400 font-bold uppercase block">Micro-Niche</span>
+                              <span className="text-sm font-semibold text-gray-700">{enhancedResult.microNiche}</span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
             </section>
@@ -2066,8 +2729,11 @@ export default function App() {
                           disabled={isEstimating || !americanTitle.trim() || !americanScript.trim()}
                           className="px-6 py-2.5 bg-white border border-indigo-200 text-indigo-700 hover:bg-indigo-50 disabled:opacity-50 rounded-lg font-medium shadow-sm transition-all flex items-center gap-2"
                         >
-                          {isEstimating ? <><Loader2 className="w-4 h-4 animate-spin" /> Analyzing...</> : "Analyze Script & Estimate"}
+                          {isEstimating ? <><Loader2 className="w-4 h-4 animate-spin" /> {estimateStatus} ({estimateProgress}%)</> : "Analyze Script & Estimate"}
                         </button>
+                        {isEstimating && (
+                           <button onClick={handleStopEstimate} className="text-xs text-red-500 font-bold uppercase mt-2">Stop Analysis</button>
+                        )}
                         {americanError && <p className="text-sm text-red-600 mt-3">{americanError}</p>}
                       </>
                     ) : (
@@ -2094,34 +2760,62 @@ export default function App() {
             </section>
 
             {/* American Tale Action Section */}
-            <div className="flex flex-col items-center gap-4">
-              {americanError && americanQuantityMode === 'user' && (
+            <div className="flex flex-col items-center gap-4 w-full">
+              {americanError && (
                 <div className="w-full p-4 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm">
                   {americanError}
                 </div>
               )}
-              {americanError && americanQuantityMode === 'ai' && americanAiEstimate !== null && (
-                <div className="w-full p-4 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm">
-                  {americanError}
-                </div>
-              )}
-              <button
-                onClick={() => handleAmericanGenerate(americanQuantityMode === 'user' ? americanUserCount : americanAiEstimate!)}
-                disabled={isAmericanGenerating || !americanTitle.trim() || !americanScript.trim() || (americanQuantityMode === 'ai' && americanAiEstimate === null)}
-                className="w-full sm:w-auto px-8 py-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 disabled:cursor-not-allowed text-white rounded-xl font-semibold shadow-sm hover:shadow-md transition-all flex items-center justify-center gap-2 text-lg"
-              >
-                {isAmericanGenerating ? (
-                  <>
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                    Generating {americanQuantityMode === 'user' ? americanUserCount : americanAiEstimate} Prompts...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-5 h-5" />
-                    Generate Prompts {americanQuantityMode === 'ai' && americanAiEstimate !== null ? `(${americanAiEstimate})` : ''}
-                  </>
+              
+              <div className="w-full max-w-xl space-y-4">
+                <button
+                  onClick={() => handleAmericanGenerate(americanQuantityMode === 'user' ? americanUserCount : americanAiEstimate!)}
+                  disabled={isAmericanGenerating || !americanTitle.trim() || !americanScript.trim() || (americanQuantityMode === 'ai' && americanAiEstimate === null)}
+                  className="w-full px-8 py-4 bg-indigo-900 hover:bg-gray-900 disabled:bg-gray-300 disabled:cursor-not-allowed text-white rounded-xl font-semibold shadow-sm hover:shadow-md transition-all flex items-center justify-center gap-2 text-lg relative overflow-hidden"
+                >
+                  {isAmericanGenerating ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      Rendering Historical Storyboard...
+                    </>
+                  ) : (
+                    <>
+                      <ScrollText className="w-5 h-5" />
+                      Generate American Tale Prompts
+                    </>
+                  )}
+                </button>
+
+                {isAmericanGenerating && (
+                  <div className="space-y-3 p-4 bg-white border border-indigo-100 rounded-2xl shadow-sm animate-in zoom-in-95 duration-300">
+                    <div className="flex justify-between items-center px-1">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 bg-indigo-900 rounded-full animate-ping" />
+                        <span className="text-sm font-bold text-gray-800">{americanStatus}</span>
+                      </div>
+                      <span className="text-sm font-mono font-bold text-indigo-900">{americanProgress}%</span>
+                    </div>
+                    
+                    <div className="w-full h-3 bg-gray-100 rounded-full overflow-hidden border border-gray-50">
+                      <div 
+                        className="h-full bg-indigo-900 transition-all duration-700 ease-in-out" 
+                        style={{ width: `${americanProgress}%` }}
+                      />
+                    </div>
+
+                    <div className="flex justify-between items-center">
+                      <p className="text-[10px] text-gray-400 font-medium italic">Processing deep historical narratives may take up to 90 seconds...</p>
+                      <button
+                        onClick={handleStopAmericanGenerate}
+                        className="flex items-center gap-1.5 px-3 py-1 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg text-xs font-bold transition-colors border border-red-100"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        Stop Rendering
+                      </button>
+                    </div>
+                  </div>
                 )}
-              </button>
+              </div>
             </div>
 
             {/* American Tale Results Section */}
@@ -2332,7 +3026,7 @@ export default function App() {
                 
                 <button
                   onClick={handleGenerateChannelPlan}
-                  disabled={isChannelGenerating || !channelNiche.trim() || !channelScripts.trim()}
+                  disabled={isChannelGenerating}
                   className="w-full py-3 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg transition-colors flex items-center justify-center gap-2 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {isChannelGenerating ? (

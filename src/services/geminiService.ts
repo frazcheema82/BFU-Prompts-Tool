@@ -1,10 +1,19 @@
 import { GoogleGenAI, HarmCategory, HarmBlockThreshold, Type, Schema } from '@google/genai';
 
 function getGenAI(apiKey?: string) {
-  const finalKey = apiKey || process.env.GEMINI_API_KEY;
-  if (!finalKey) {
+  let rawKey = apiKey || process.env.GEMINI_API_KEY;
+  if (!rawKey) {
     throw new Error("No Gemini API key provided and no default key found.");
   }
+  
+  // Sanitize key: remove characters that would cause "Failed to execute 'append' on 'Headers'"
+  // We remove anything that isn't a standard ASCII printable character.
+  const finalKey = rawKey.replace(/[^\x21-\x7E]/g, "").trim();
+  
+  if (finalKey.length !== rawKey.trim().length) {
+    console.warn("API Key sanitized: some non-standard characters were removed.");
+  }
+  
   return new GoogleGenAI({ apiKey: finalKey });
 }
 
@@ -27,6 +36,38 @@ const relaxedSafetySettings = [
     threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
   }
 ];
+
+async function callGemini(ai: any, modelName: string, contents: any[], config: any, retries = 2): Promise<any> {
+    const activeModel = modelName.includes("gemini-3") ? "gemini-1.5-flash" : modelName;
+    try {
+      const model = ai.getGenerativeModel({ model: activeModel });
+      const result = await model.generateContent({
+        contents,
+        generationConfig: config,
+        safetySettings: relaxedSafetySettings,
+        systemInstruction: config.systemInstruction
+      });
+      const response = await result.response;
+      return { text: response.text() };
+    } catch (error: any) {
+      const msg = error.message || String(error);
+      if ((msg.includes("429") || msg.toLowerCase().includes("quota")) && retries > 0) {
+        // Exponential backoff
+        await new Promise(resolve => setTimeout(resolve, (3 - retries) * 1000));
+        return await callGemini(ai, activeModel, contents, config, retries - 1);
+      }
+      // If it fails with 404, try pro model as ultimate fallback
+      if ((msg.includes("404") || msg.includes("not found")) && activeModel === "gemini-1.5-flash" && retries > 0) {
+        return await callGemini(ai, "gemini-1.5-pro", contents, config, 0);
+      }
+      throw error;
+    }
+  }
+
+function truncate(str: string, max = 100000): string {
+  if (!str) return "";
+  return str.length > max ? str.substring(0, max) + "... [truncated]" : str;
+}
 
 function formatError(error: any): string {
   const msg = error.message || String(error);
@@ -82,7 +123,7 @@ export async function extractCharacters(
   apiKey: string
 ): Promise<CharacterDetail[]> {
   const ai = getGenAI(apiKey);
-  const model = 'gemini-2.5-flash';
+  const model = 'gemini-1.5-flash';
 
   const systemInstruction = `You are an expert film casting director and character designer.
 Your task is to analyze a script and extract all distinct characters.
@@ -96,7 +137,7 @@ The image prompt MUST include:
 - Specify that it is a portrait photo with a clear, visible face.
 Ensure each character has a completely distinct and unique physical description in their prompt.`;
 
-  const contents = [`Title: ${title}\nScript:\n${script}`];
+  const contents = [`Title: ${truncate(title)}\nScript:\n${truncate(script, 50000)}`];
 
   const responseSchema: Schema = {
     type: Type.OBJECT,
@@ -122,16 +163,12 @@ Ensure each character has a completely distinct and unique physical description 
   };
 
   try {
-    const response = await ai.models.generateContent({
-      model,
-      contents,
-      config: {
-        safetySettings: relaxedSafetySettings,
-        systemInstruction,
-        responseMimeType: "application/json",
-        responseSchema,
-        temperature: 0.7,
-      }
+    const response = await callGemini(ai, model, contents, {
+      safetySettings: relaxedSafetySettings,
+      systemInstruction,
+      responseMimeType: "application/json",
+      responseSchema,
+      temperature: 0.7,
     });
 
     const text = response.text;
@@ -149,7 +186,7 @@ export async function analyzeAndSuggestStyle(
   apiKey: string
 ): Promise<StyleRecommendation> {
   const ai = getGenAI(apiKey);
-  const model = 'gemini-2.5-flash';
+  const model = 'gemini-1.5-flash';
 
   const systemInstruction = `You are an expert creative director and YouTube viral content strategist.
 Your task is to analyze a script and title, and recommend the absolute best visual style, media type, and overall aesthetic to make this video go viral on YouTube.
@@ -157,7 +194,7 @@ Consider what performs best: cinematic AI imagery, photorealistic historical rec
 Suggest the optimal camera style, the era/setting, and the color palette.
 Finally, synthesize all of this into a single 'combinedStylePrompt' that can be prefixed to image generation prompts to enforce this style globally.`;
 
-  const contents = [`Title: ${title}\nScript:\n${script}`];
+  const contents = [`Title: ${truncate(title)}\nScript:\n${truncate(script, 50000)}`];
 
   const responseSchema: Schema = {
     type: Type.OBJECT,
@@ -175,16 +212,12 @@ Finally, synthesize all of this into a single 'combinedStylePrompt' that can be 
   };
 
   try {
-    const response = await ai.models.generateContent({
-      model,
-      contents,
-      config: {
-        safetySettings: relaxedSafetySettings,
-        systemInstruction,
-        responseMimeType: "application/json",
-        responseSchema,
-        temperature: 0.7,
-      }
+    const response = await callGemini(ai, model, contents, {
+      safetySettings: relaxedSafetySettings,
+      systemInstruction,
+      responseMimeType: "application/json",
+      responseSchema,
+      temperature: 0.7,
     });
 
     const text = response.text;
@@ -206,7 +239,7 @@ export async function generatePrompts(
 ): Promise<PromptGenerationResult> {
   const ai = getGenAI(apiKey);
 
-  const model = 'gemini-2.5-flash';
+  const model = 'gemini-1.5-flash';
 
   let characterConsistencyRules = '';
   if (uploadedCharacters && uploadedCharacters.length > 0) {
@@ -248,17 +281,17 @@ ${characterConsistencyRules}
 6. Return the output strictly as a JSON object matching the requested schema.`;
 
   const promptText = `
-Title: ${title}
+Title: ${truncate(title)}
 
 Script:
-${script}
+${truncate(script, 100000)}
 `;
 
   const contents: any[] = [promptText];
 
   if (uploadedCharacters && uploadedCharacters.length > 0) {
     uploadedCharacters.forEach(c => {
-      contents.push(`Character Name: ${c.name}\nDetails: ${c.details}`);
+      contents.push(`Character Name: ${c.name}\nDetails: ${truncate(c.details, 1000)}`);
       if (c.imageBase64 && c.mimeType) {
         contents.push({
           inlineData: {
@@ -296,16 +329,12 @@ ${script}
   };
 
   try {
-    const response = await ai.models.generateContent({
-      model: model,
-      contents: contents,
-      config: {
-        safetySettings: relaxedSafetySettings,
-        systemInstruction: systemInstruction,
-        responseMimeType: "application/json",
-        responseSchema: responseSchema,
-        temperature: 0.7,
-      },
+    const response = await callGemini(ai, model, contents, {
+      safetySettings: relaxedSafetySettings,
+      systemInstruction: systemInstruction,
+      responseMimeType: "application/json",
+      responseSchema: responseSchema,
+      temperature: 0.7,
     });
 
     const text = response.text;
@@ -332,7 +361,7 @@ export async function generateVideoPrompts(
 ): Promise<PromptGenerationResult> {
   const ai = getGenAI(apiKey);
 
-  const model = 'gemini-2.5-flash';
+  const model = 'gemini-1.5-flash';
 
   let characterInstruction = 'Whenever referring to the main character or protagonist in the scene, you MUST use the exact word "CHARACTER" (in all caps). Do not use names, pronouns (he/she/they), or generic terms like "man" or "woman".';
   
@@ -354,10 +383,10 @@ CRITICAL RULES:
 6. Return the output strictly as a JSON object matching the requested schema.`;
 
   const promptText = `
-Title: ${title}
+Title: ${truncate(title)}
 
 Script:
-${script}
+${truncate(script, 100000)}
 `;
 
   const contents: any[] = [promptText];
@@ -398,16 +427,12 @@ ${script}
   };
 
   try {
-    const response = await ai.models.generateContent({
-      model: model,
-      contents: contents,
-      config: {
-        safetySettings: relaxedSafetySettings,
-        systemInstruction: systemInstruction,
-        responseMimeType: "application/json",
-        responseSchema: responseSchema,
-        temperature: 0.7,
-      },
+    const response = await callGemini(ai, model, contents, {
+      safetySettings: relaxedSafetySettings,
+      systemInstruction: systemInstruction,
+      responseMimeType: "application/json",
+      responseSchema: responseSchema,
+      temperature: 0.7,
     });
 
     const text = response.text;
@@ -430,14 +455,14 @@ export async function estimateAmericanTalePrompts(
   apiKey: string
 ): Promise<number> {
   const ai = getGenAI(apiKey);
-  const model = 'gemini-2.5-flash';
+  const model = 'gemini-1.5-flash';
 
   const systemInstruction = `You are an expert AI film director and storyboard artist specializing in Historical American Tales (1600-1945).
 The user is providing a title, an era (${era}), and a script.
 Your task is to analyze the entire script and determine the optimal number of distinct visual scenes/prompts needed to fully illustrate the story.
 Reply ONLY with a raw JSON object containing a single key "estimatedCount" with an integer value.`;
 
-  const contents = [`Title: ${title}\nEra: ${era}\nScript:\n${script}`];
+  const contents = [`Title: ${truncate(title)}\nEra: ${era}\nScript:\n${truncate(script, 100000)}`];
 
   const responseSchema: Schema = {
     type: Type.OBJECT,
@@ -451,16 +476,12 @@ Reply ONLY with a raw JSON object containing a single key "estimatedCount" with 
   };
 
   try {
-    const response = await ai.models.generateContent({
-      model,
-      contents,
-      config: {
-        safetySettings: relaxedSafetySettings,
-        systemInstruction,
-        responseMimeType: "application/json",
-        responseSchema,
-        temperature: 0.2,
-      }
+    const response = await callGemini(ai, model, contents, {
+      safetySettings: relaxedSafetySettings,
+      systemInstruction,
+      responseMimeType: "application/json",
+      responseSchema,
+      temperature: 0.2,
     });
 
     const text = response.text;
@@ -482,7 +503,7 @@ export async function generateAmericanTalePrompts(
 ): Promise<PromptGenerationResult> {
   const ai = getGenAI(apiKey);
 
-  const model = 'gemini-2.5-flash';
+  const model = 'gemini-1.5-flash';
 
   const systemInstruction = `You are an expert AI image prompt generator and historical film director.
 Your task is to analyze a historical American script (Era: ${era}) and generate EXACTLY ${count} highly detailed image generation prompts.
@@ -497,11 +518,11 @@ CRITICAL RULES:
 7. Return the output strictly as a JSON object matching the requested schema.`;
 
   const promptText = `
-Title: ${title}
+Title: ${truncate(title)}
 Era: ${era}
 
 Script:
-${script}
+${truncate(script, 100000)}
 `;
 
   const contents = [promptText];
@@ -532,16 +553,12 @@ ${script}
   };
 
   try {
-    const response = await ai.models.generateContent({
-      model: model,
-      contents: contents,
-      config: {
-        safetySettings: relaxedSafetySettings,
-        systemInstruction: systemInstruction,
-        responseMimeType: "application/json",
-        responseSchema: responseSchema,
-        temperature: 0.7,
-      },
+    const response = await callGemini(ai, model, contents, {
+      safetySettings: relaxedSafetySettings,
+      systemInstruction: systemInstruction,
+      responseMimeType: "application/json",
+      responseSchema: responseSchema,
+      temperature: 0.7,
     });
 
     const text = response.text;
@@ -576,65 +593,124 @@ export interface ChannelStrategyResult {
   contentRoadmap: string;
 }
 
+export interface EnhancedScriptResult {
+  niche: string;
+  subNiche: string;
+  microNiche: string;
+  enhancedScript: string;
+}
+
+export async function enhanceScript(
+  title: string,
+  script: string,
+  apiKey: string
+): Promise<EnhancedScriptResult> {
+  const ai = getGenAI(apiKey);
+  const model = 'gemini-1.5-flash';
+
+  const systemInstruction = `You are a world-class YouTube Script Doctor and Growth Strategist.
+Your goal is to take a raw script and title, analyze its niche, and rewrite it for maximum virality and retention.
+
+MISSION:
+1. Identify the high-level Niche, the more specific Sub-Niche, and the ultra-targeted Micro-Niche.
+2. Rewrite and polish the script using the "YouTube Virality Framework":
+   - Strong Hook: The first 30 seconds must grab attention immediately and maintain high retention.
+   - Pacing: Maintain high energy and clear narrative flow throughout the video.
+   - Algorithmic Optimization: Use high-reach keywords and phrases that trigger the YouTube recommendation engine naturally.
+   - Anti-AI Slop: Ensure the language is vibrant, human-like, and strictly avoids generic AI-generated patterns (no repetitive transitions, no over-the-top formal filler, no robotic summaries).
+   - Reach & Engagement: Rewrite it to ensure it gets maximum reach and doesn't get suppressed as "dead content" by Gemini or YouTube's quality filters.
+
+Deliver the result in a raw JSON object.`;
+
+  const contents = [`Title: ${truncate(title, 2000)}\nOriginal Script:\n${truncate(script, 100000)}`];
+
+  const responseSchema: Schema = {
+    type: Type.OBJECT,
+    properties: {
+      niche: { type: Type.STRING },
+      subNiche: { type: Type.STRING },
+      microNiche: { type: Type.STRING },
+      enhancedScript: { type: Type.STRING, description: "The full polished and viral-optimized script." }
+    },
+    required: ["niche", "subNiche", "microNiche", "enhancedScript"]
+  };
+
+  try {
+    const response = await callGemini(ai, model, contents, {
+      safetySettings: relaxedSafetySettings,
+      systemInstruction,
+      responseMimeType: "application/json",
+      responseSchema,
+      temperature: 0.8,
+    });
+
+    const text = response.text;
+    if (!text) throw new Error("No response from Gemini.");
+    return JSON.parse(text) as EnhancedScriptResult;
+  } catch (error: any) {
+    console.error("Error enhancing script:", error);
+    throw new Error(formatError(error));
+  }
+}
+
 export async function generateChannelStrategy(
+  research: string,
   niche: string,
-  researchData: string,
+  channelData: string,
   titles: string,
   scripts: string,
   apiKey?: string
 ): Promise<ChannelStrategyResult> {
   try {
-    const ai = getGenAI(apiKey);
-    const prompt = `You are an expert YouTube Strategist and Channel Planner.
+  const ai = getGenAI(apiKey);
+  const model = 'gemini-1.5-flash';
+  const prompt = `You are an expert YouTube Strategist and Channel Planner.
 I will provide you with the following inputs:
-- Niche/Context: ${niche}
-- Channel Data/Research: ${researchData}
-- Sample Titles: ${titles}
-- Sample Scripts/Content: ${scripts}
+- Research: ${truncate(research, 50000)}
+- Niche/Context: ${truncate(niche, 5000)}
+- Channel Data: ${truncate(channelData, 20000)}
+- Sample Titles: ${truncate(titles, 10000)}
+- Sample Scripts/Content: ${truncate(scripts, 100000)}
 
 Analyze provided details. Provide: 1. Target audience psychological profile (overview and niche analysis). 2. Visual direction (Stock/AI/Hybrid). 3. Asset recommendations for consistency: Atmosphere, Character Protocols, Environmental focus, Era/Setting, Camera Styles. 4. Suggested Styles: 2-3 styles with ready-to-use Prompt Prefixes. 5. Roadmap.`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.1-pro",
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      config: {
-        temperature: 0.7,
-        topP: 0.9,
-        safetySettings: relaxedSafetySettings,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            overview: { type: Type.STRING },
-            nicheAnalysis: { type: Type.STRING },
-            visualDirection: {
+    const response = await callGemini(ai, model, [{ role: 'user', parts: [{ text: prompt }] }], {
+      temperature: 0.7,
+      topP: 0.9,
+      safetySettings: relaxedSafetySettings,
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          overview: { type: Type.STRING },
+          nicheAnalysis: { type: Type.STRING },
+          visualDirection: {
+            type: Type.OBJECT,
+            properties: {
+              mediaType: { type: Type.STRING },
+              atmosphere: { type: Type.STRING },
+              characterProtocols: { type: Type.STRING },
+              environmentalFocus: { type: Type.STRING },
+              eraAndSetting: { type: Type.STRING },
+              cameraAndFraming: { type: Type.STRING },
+            },
+            required: ["mediaType", "atmosphere", "characterProtocols", "environmentalFocus", "eraAndSetting", "cameraAndFraming"]
+          },
+          suggestedStyles: {
+            type: Type.ARRAY,
+            items: {
               type: Type.OBJECT,
               properties: {
-                mediaType: { type: Type.STRING },
-                atmosphere: { type: Type.STRING },
-                characterProtocols: { type: Type.STRING },
-                environmentalFocus: { type: Type.STRING },
-                eraAndSetting: { type: Type.STRING },
-                cameraAndFraming: { type: Type.STRING },
+                styleName: { type: Type.STRING },
+                description: { type: Type.STRING },
+                promptPrefix: { type: Type.STRING }
               },
-              required: ["mediaType", "atmosphere", "characterProtocols", "environmentalFocus", "eraAndSetting", "cameraAndFraming"]
-            },
-            suggestedStyles: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  styleName: { type: Type.STRING },
-                  description: { type: Type.STRING },
-                  promptPrefix: { type: Type.STRING }
-                },
-                required: ["styleName", "description", "promptPrefix"]
-              }
-            },
-            contentRoadmap: { type: Type.STRING }
+              required: ["styleName", "description", "promptPrefix"]
+            }
           },
-          required: ["overview", "nicheAnalysis", "visualDirection", "suggestedStyles", "contentRoadmap"]
-        }
+          contentRoadmap: { type: Type.STRING }
+        },
+        required: ["overview", "nicheAnalysis", "visualDirection", "suggestedStyles", "contentRoadmap"]
       }
     });
 
@@ -660,6 +736,7 @@ export async function generateDeepScenePrompts(
 ): Promise<PromptGenerationResult> {
   try {
     const ai = getGenAI(apiKey);
+    const model = 'gemini-1.5-flash';
     
     const systemPrompt = `You are an expert AI Cinematographer.
 Analyze the ENTIRE script. Imagine the cinematography. Create Exactly ${targetCount} distinct visual moments. 
@@ -674,37 +751,33 @@ Strategy Visual Direction:
 - Camera/Framing: ${strategy.visualDirection.cameraAndFraming}
 - Setting: ${strategy.visualDirection.eraAndSetting}
 
-Video Title: ${title}
+Video Title: ${truncate(title, 5000)}
 Script:
-${script}
+${truncate(script, 100000)}
 `;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.1-pro",
-      contents: [{ role: 'user', parts: [{ text: "Please generate the scene prompts for the script now focusing on specific lighting and angles." }] }],
-      config: {
-        systemInstruction: systemPrompt,
-        temperature: 0.7,
-        topP: 0.9,
-        safetySettings: relaxedSafetySettings,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            prompts: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  sentence: { type: Type.STRING, description: "The Scene Title/Context" },
-                  prompt: { type: Type.STRING, description: "The Full Detailed AI Prompt" }
-                },
-                required: ["sentence", "prompt"]
-              }
+    const response = await callGemini(ai, model, [{ role: 'user', parts: [{ text: "Please generate the scene prompts for the script now focusing on specific lighting and angles." }] }], {
+      systemInstruction: systemPrompt,
+      temperature: 0.7,
+      topP: 0.9,
+      safetySettings: relaxedSafetySettings,
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          prompts: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                sentence: { type: Type.STRING, description: "The Scene Title/Context" },
+                prompt: { type: Type.STRING, description: "The Full Detailed AI Prompt" }
+              },
+              required: ["sentence", "prompt"]
             }
-          },
-          required: ["prompts"]
-        }
+          }
+        },
+        required: ["prompts"]
       }
     });
 
