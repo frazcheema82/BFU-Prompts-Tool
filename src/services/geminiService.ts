@@ -38,27 +38,26 @@ const relaxedSafetySettings = [
 ];
 
 async function callGemini(ai: any, modelName: string, contents: any[], config: any, retries = 2): Promise<any> {
-    const activeModel = modelName.includes("gemini-3") ? "gemini-1.5-flash" : modelName;
     try {
-      const model = ai.getGenerativeModel({ model: activeModel });
-      const result = await model.generateContent({
+      const response = await ai.models.generateContent({
+        model: modelName,
         contents,
-        generationConfig: config,
-        safetySettings: relaxedSafetySettings,
-        systemInstruction: config.systemInstruction
+        config: {
+          ...config,
+          safetySettings: relaxedSafetySettings,
+        }
       });
-      const response = await result.response;
-      return { text: response.text() };
+      return response;
     } catch (error: any) {
       const msg = error.message || String(error);
       if ((msg.includes("429") || msg.toLowerCase().includes("quota")) && retries > 0) {
         // Exponential backoff
         await new Promise(resolve => setTimeout(resolve, (3 - retries) * 1000));
-        return await callGemini(ai, activeModel, contents, config, retries - 1);
+        return await callGemini(ai, modelName, contents, config, retries - 1);
       }
-      // If it fails with 404, try pro model as ultimate fallback
-      if ((msg.includes("404") || msg.includes("not found")) && activeModel === "gemini-1.5-flash" && retries > 0) {
-        return await callGemini(ai, "gemini-1.5-pro", contents, config, 0);
+      // If it fails with 404, try flash-lite as fallback
+      if ((msg.includes("404") || msg.includes("not found")) && modelName.includes("gemini-3") && retries > 0) {
+        return await callGemini(ai, "gemini-3.1-flash-lite", contents, config, 0);
       }
       throw error;
     }
@@ -123,7 +122,7 @@ export async function extractCharacters(
   apiKey: string
 ): Promise<CharacterDetail[]> {
   const ai = getGenAI(apiKey);
-  const model = 'gemini-1.5-flash';
+  const model = 'gemini-3-flash-preview';
 
   const systemInstruction = `You are an expert film casting director and character designer.
 Your task is to analyze a script and extract all distinct characters.
@@ -186,7 +185,7 @@ export async function analyzeAndSuggestStyle(
   apiKey: string
 ): Promise<StyleRecommendation> {
   const ai = getGenAI(apiKey);
-  const model = 'gemini-1.5-flash';
+  const model = 'gemini-3-flash-preview';
 
   const systemInstruction = `You are an expert creative director and YouTube viral content strategist.
 Your task is to analyze a script and title, and recommend the absolute best visual style, media type, and overall aesthetic to make this video go viral on YouTube.
@@ -239,7 +238,7 @@ export async function generatePrompts(
 ): Promise<PromptGenerationResult> {
   const ai = getGenAI(apiKey);
 
-  const model = 'gemini-1.5-flash';
+  const model = 'gemini-3-flash-preview';
 
   let characterConsistencyRules = '';
   if (uploadedCharacters && uploadedCharacters.length > 0) {
@@ -361,7 +360,7 @@ export async function generateVideoPrompts(
 ): Promise<PromptGenerationResult> {
   const ai = getGenAI(apiKey);
 
-  const model = 'gemini-1.5-flash';
+  const model = 'gemini-3-flash-preview';
 
   let characterInstruction = 'Whenever referring to the main character or protagonist in the scene, you MUST use the exact word "CHARACTER" (in all caps). Do not use names, pronouns (he/she/they), or generic terms like "man" or "woman".';
   
@@ -455,7 +454,7 @@ export async function estimateAmericanTalePrompts(
   apiKey: string
 ): Promise<number> {
   const ai = getGenAI(apiKey);
-  const model = 'gemini-1.5-flash';
+  const model = 'gemini-3-flash-preview';
 
   const systemInstruction = `You are an expert AI film director and storyboard artist specializing in Historical American Tales (1600-1945).
 The user is providing a title, an era (${era}), and a script.
@@ -503,7 +502,7 @@ export async function generateAmericanTalePrompts(
 ): Promise<PromptGenerationResult> {
   const ai = getGenAI(apiKey);
 
-  const model = 'gemini-1.5-flash';
+  const model = 'gemini-3-flash-preview';
 
   const systemInstruction = `You are an expert AI image prompt generator and historical film director.
 Your task is to analyze a historical American script (Era: ${era}) and generate EXACTLY ${count} highly detailed image generation prompts.
@@ -606,7 +605,7 @@ export async function enhanceScript(
   apiKey: string
 ): Promise<EnhancedScriptResult> {
   const ai = getGenAI(apiKey);
-  const model = 'gemini-1.5-flash';
+  const model = 'gemini-3-flash-preview';
 
   const systemInstruction = `You are a world-class YouTube Script Doctor and Growth Strategist.
 Your goal is to take a raw script and title, analyze its niche, and rewrite it for maximum virality and retention.
@@ -663,7 +662,7 @@ export async function generateChannelStrategy(
 ): Promise<ChannelStrategyResult> {
   try {
   const ai = getGenAI(apiKey);
-  const model = 'gemini-1.5-flash';
+  const model = 'gemini-3-flash-preview';
   const prompt = `You are an expert YouTube Strategist and Channel Planner.
 I will provide you with the following inputs:
 - Research: ${truncate(research, 50000)}
@@ -736,7 +735,7 @@ export async function generateDeepScenePrompts(
 ): Promise<PromptGenerationResult> {
   try {
     const ai = getGenAI(apiKey);
-    const model = 'gemini-1.5-flash';
+    const model = 'gemini-3-flash-preview';
     
     const systemPrompt = `You are an expert AI Cinematographer.
 Analyze the ENTIRE script. Imagine the cinematography. Create Exactly ${targetCount} distinct visual moments. 
