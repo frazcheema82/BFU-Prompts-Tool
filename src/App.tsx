@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, FileText, Copy, Check, Loader2, Sparkles, Download, Palette, Video, Image as ImageIcon, Trash2, User, BookOpen, Calculator, History as HistoryIcon, Clock, Plus, ArrowRight, Wand2, LogOut, KeyRound, ShieldAlert, Stethoscope, ScrollText } from 'lucide-react';
+import { Upload, FileText, Copy, Check, Loader2, Sparkles, Download, Palette, Video, Image as ImageIcon, Trash2, User, BookOpen, Calculator, History as HistoryIcon, Clock, Plus, ArrowRight, Wand2, LogOut, KeyRound, ShieldAlert, Stethoscope, ScrollText, Menu } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
 import { generatePrompts, generateVideoPrompts, estimateAmericanTalePrompts, generateAmericanTalePrompts, generateChannelStrategy, generateDeepScenePrompts, PromptGenerationResult, ChannelStrategyResult, extractCharacters, CharacterDetail, analyzeAndSuggestStyle, StyleRecommendation, enhanceScript, EnhancedScriptResult } from './services/geminiService';
 import { useAuth } from './contexts/AuthContext';
 import { collection, onSnapshot, addDoc, query, where, updateDoc, doc } from 'firebase/firestore';
@@ -36,6 +37,7 @@ export default function App() {
   const [availableKeys, setAvailableKeys] = useState<{id: string, name: string, keyValue: string, assignedTo?: string}[]>([]);
   const [selectedApiKey, setSelectedApiKey] = useState<string>('');
   const [todayGenerations, setTodayGenerations] = useState<number>(0);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   const getWordCount = (text: string) => text.trim().split(/\s+/).filter(Boolean).length;
   const getCharCount = (text: string) => text.length;
@@ -1335,151 +1337,160 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 text-gray-900 font-sans selection:bg-indigo-100 selection:text-indigo-900">
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <div className="bg-indigo-600 p-2 rounded-lg">
-              <Sparkles className="w-5 h-5 text-white" />
-            </div>
-            <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-violet-600 hidden lg:block">
-              BFU Prompts
-            </h1>
-          </div>
-          
-          <div className="flex items-center bg-gray-100 p-1 rounded-lg overflow-x-auto gap-1">
-            <button
-              onClick={() => setActiveTab('image')}
-              className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 rounded-md text-sm font-medium transition-colors whitespace-nowrap ${activeTab === 'image' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
-            >
-              <ImageIcon className="w-4 h-4" />
-              <span className="hidden sm:inline">Image</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('video')}
-              className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 rounded-md text-sm font-medium transition-colors whitespace-nowrap ${activeTab === 'video' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
-            >
-              <Video className="w-4 h-4" />
-              <span className="hidden sm:inline">Video</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('american')}
-              className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 rounded-md text-sm font-medium transition-colors whitespace-nowrap ${activeTab === 'american' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
-            >
-              <BookOpen className="w-4 h-4" />
-              <span className="hidden sm:inline">American Tale</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('channel')}
-              className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 rounded-md text-sm font-medium transition-colors whitespace-nowrap ${activeTab === 'channel' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
-            >
-              <Video className="w-4 h-4" />
-              <span className="hidden sm:inline">Channel Planner</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('history')}
-              className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 rounded-md text-sm font-medium transition-colors whitespace-nowrap ${activeTab === 'history' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
-            >
-              <HistoryIcon className="w-4 h-4" />
-              <span className="hidden sm:inline">History</span>
-            </button>
-          </div>
+    <div className="flex h-screen bg-[#F0F2F5] text-gray-900 font-sans selection:bg-indigo-100 selection:text-indigo-900 overflow-hidden relative">
+      {/* Mobile Sidebar Overlay */}
+      <AnimatePresence>
+        {isSidebarOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setIsSidebarOpen(false)}
+            className="fixed inset-0 bg-black/20 backdrop-blur-sm z-[60] lg:hidden"
+          />
+        )}
+      </AnimatePresence>
 
-          <div className="flex items-center gap-4 flex-shrink-0">
-            <div className="hidden md:flex flex-col items-end mr-2">
-              <span className="text-xs text-gray-500 font-medium tracking-wide uppercase">Generations Today</span>
-              <span className="text-sm font-bold text-indigo-600">{todayGenerations}</span>
-            </div>
+      {/* Glossy Sidebar Navigation */}
+      <motion.nav 
+        initial={false}
+        animate={{ 
+          x: typeof window !== 'undefined' && window.innerWidth < 1024 
+            ? (isSidebarOpen ? 0 : -280) 
+            : 0 
+        }}
+        transition={{ type: "spring", damping: 25, stiffness: 200 }}
+        className={`fixed lg:relative w-[280px] lg:w-64 h-full bg-white/70 backdrop-blur-xl border-r border-white/40 flex flex-col z-[70] shadow-[4px_0_24px_rgba(0,0,0,0.02)] ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}
+      >
+        <div className="p-6 flex items-center gap-3">
+          <div className="bg-gradient-to-br from-indigo-600 to-violet-600 p-2.5 rounded-2xl shadow-lg shadow-indigo-200 transform hover:rotate-6 transition-transform cursor-pointer">
+            <Sparkles className="w-5 h-5 text-white" />
+          </div>
+          <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-violet-600">
+            BFU AI
+          </h1>
+        </div>
 
-            <div className="flex flex-col items-end gap-1 bg-gray-50 border border-gray-200 px-3 py-1.5 rounded-lg">
-              <div className="flex items-center gap-2">
-                <KeyRound className="w-4 h-4 text-gray-500" />
-                <select 
-                  value={selectedApiKey}
-                  onChange={(e) => setSelectedApiKey(e.target.value)}
-                  className="bg-transparent text-sm text-gray-700 font-medium focus:outline-none focus:ring-0 appearance-none py-1 truncate max-w-[120px] cursor-pointer"
-                >
-                  {availableKeys.length === 0 ? (
-                    <option value="">No Keys</option>
-                  ) : (
-                    availableKeys.map(k => {
-                      const canUse = k.assignedTo === user?.email || isAdmin;
-                      return (
-                        <option key={k.id} value={k.keyValue} disabled={!canUse}>
-                          {k.name} {!canUse ? '(Locked)' : ''}
-                        </option>
-                      );
-                    })
-                  )}
-                </select>
-              </div>
-              {!availableKeys.some(k => k.assignedTo === user?.email || isAdmin) && (
-                <button
-                  onClick={async () => {
-                    try {
-                      await addDoc(collection(db, 'api_key_requests'), {
-                        userId: user?.uid,
-                        email: user?.email,
-                        createdAt: Date.now(),
-                        status: 'pending'
-                      });
-                      alert('Request submitted to admin!');
-                    } catch (e) {
-                      console.error(e);
-                      alert('Failed to submit request.');
-                    }
-                  }}
-                  className="text-[10px] text-indigo-600 hover:underline font-semibold"
-                >
-                  Request API Key
-                </button>
+        <div className="flex-1 px-4 space-y-2 mt-4 overflow-y-auto">
+          {[
+            { id: 'image', icon: ImageIcon, label: 'Image Engine' },
+            { id: 'video', icon: Video, label: 'Video Storyboard' },
+            { id: 'american', icon: BookOpen, label: 'American Tales' },
+            { id: 'channel', icon: Video, label: 'Channel Planner' },
+            { id: 'history', icon: HistoryIcon, label: 'Recent Cycles' },
+          ].map((item) => (
+            <motion.button
+              key={item.id}
+              whileHover={{ x: 4, scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={() => {
+                setActiveTab(item.id as any);
+                setIsSidebarOpen(false);
+              }}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all duration-300 relative group overflow-hidden ${
+                activeTab === item.id 
+                  ? 'bg-gradient-to-r from-indigo-600 to-indigo-500 text-white shadow-lg shadow-indigo-100' 
+                  : 'text-gray-500 hover:bg-gray-100/50 hover:text-gray-900'
+              }`}
+            >
+              <item.icon className={`w-5 h-5 ${activeTab === item.id ? 'text-white' : 'text-gray-400 group-hover:text-indigo-600'}`} />
+              <span>{item.label}</span>
+              {activeTab === item.id && (
+                <motion.div 
+                  layoutId="activeTab"
+                  className="absolute right-2 w-1.5 h-1.5 rounded-full bg-white"
+                />
               )}
-            </div>
+            </motion.button>
+          ))}
+        </div>
 
-            <div className="flex items-center gap-2 pl-4 border-l border-gray-200">
+        <div className="p-4 space-y-4">
+          {/* Daily Goal Visualizer */}
+          <div className="p-4 rounded-3xl bg-indigo-50/50 border border-indigo-100/50 backdrop-blur-sm">
+            <div className="flex justify-between items-end mb-2">
+              <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider">Daily Pulse</span>
+              <span className="text-xs font-bold text-indigo-600">{todayGenerations} cycles</span>
+            </div>
+            <div className="h-1.5 w-full bg-indigo-100 rounded-full overflow-hidden">
+              <motion.div 
+                initial={{ width: 0 }}
+                animate={{ width: `${Math.min((todayGenerations / 50) * 100, 100)}%` }}
+                className="h-full bg-indigo-500 rounded-full"
+              />
+            </div>
+          </div>
+
+          {/* User Profile Glossy */}
+          <div className="p-3 rounded-3xl bg-white/40 border border-white/60 backdrop-blur-md shadow-sm">
+            <div className="flex items-center gap-3">
+              <div className="relative">
+                {user?.photoURL ? (
+                  <img src={user.photoURL} alt="Profile" className="w-10 h-10 rounded-2xl border-2 border-white shadow-sm" />
+                ) : (
+                  <div className="w-10 h-10 rounded-2xl bg-indigo-100 flex items-center justify-center border-2 border-white shadow-sm">
+                    <User className="w-5 h-5 text-indigo-600" />
+                  </div>
+                )}
+                <div className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-green-500 border-2 border-white" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-bold text-gray-900 truncate">{user?.displayName?.split(' ')[0] || 'Explorer'}</p>
+                <button onClick={logout} className="text-[10px] font-medium text-gray-500 hover:text-red-500 transition-colors uppercase tracking-tight">System Exit</button>
+              </div>
               {isAdmin && (
-                <Link
-                  to="/admin"
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors text-amber-700 hover:bg-amber-50 border border-transparent hover:border-amber-200"
-                  title="Admin Panel"
-                >
+                <Link to="/admin" className="p-2 rounded-xl bg-amber-50 text-amber-600 hover:bg-amber-100 transition-colors">
                   <ShieldAlert className="w-4 h-4" />
-                  <span className="hidden lg:inline">Admin</span>
                 </Link>
               )}
-              <div className="group relative">
-                <button className="flex items-center gap-2 focus:outline-none">
-                  {user?.photoURL ? (
-                    <img src={user.photoURL} alt="Profile" className="w-8 h-8 rounded-full border border-gray-200" />
-                  ) : (
-                    <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center border border-indigo-200">
-                      <User className="w-4 h-4 text-indigo-600" />
-                    </div>
-                  )}
-                </button>
-                <div className="absolute right-0 mt-2 w-48 bg-white rounded-xl shadow-lg border border-gray-100 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all transform origin-top-right z-50">
-                  <div className="px-4 py-3 border-b border-gray-100">
-                    <p className="text-sm font-medium text-gray-900 truncate">{user?.displayName || 'User'}</p>
-                    <p className="text-xs text-gray-500 truncate">{user?.email}</p>
-                  </div>
-                  <div className="p-1">
-                    <button
-                      onClick={logout}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                    >
-                      <LogOut className="w-4 h-4" />
-                      Sign Out / Switch
-                    </button>
-                  </div>
-                </div>
-              </div>
             </div>
           </div>
         </div>
-      </header>
+      </motion.nav>
 
-      <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Top Minimal Navigation */}
+        <header className="h-16 px-4 lg:px-8 flex items-center justify-between border-b border-gray-200/50 bg-white/40 backdrop-blur-lg shrink-0">
+          <div className="flex items-center gap-4">
+            <button 
+              onClick={() => setIsSidebarOpen(true)}
+              className="p-2 -ml-2 lg:hidden text-gray-500 hover:bg-gray-100 rounded-xl transition-colors"
+            >
+              <Menu className="w-6 h-6" />
+            </button>
+            <div className="h-4 w-px bg-gray-300 hidden md:block" />
+            <div className="flex items-center gap-2 bg-gray-100/50 px-3 py-1.5 rounded-2xl border border-gray-200/50">
+              <KeyRound className="w-4 h-4 text-gray-400" />
+              <select 
+                value={selectedApiKey}
+                onChange={(e) => setSelectedApiKey(e.target.value)}
+                className="bg-transparent text-xs text-gray-600 font-bold focus:outline-none appearance-none cursor-pointer"
+              >
+                {availableKeys.map(k => (
+                  <option key={k.id} value={k.keyValue}>{k.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+             <div className="px-3 py-1.5 rounded-2xl bg-white border border-gray-200 shadow-sm text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+               AI Era Engine v3.1
+             </div>
+          </div>
+        </header>
+
+        <main className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+          <div className="max-w-5xl mx-auto space-y-8 pb-12">
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={activeTab}
+                initial={{ y: 20, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                exit={{ y: -20, opacity: 0 }}
+                transition={{ duration: 0.4, ease: "easeOut" }}
+              >
         
         {/* ================= IMAGE PROMPTS TAB ================= */}
         {activeTab === 'image' && (
@@ -1957,7 +1968,7 @@ export default function App() {
             </section>
 
             {/* Action Section */}
-            <div className="flex flex-col items-center gap-4 w-full">
+            <div className="flex flex-col items-center gap-4 w-full pt-12 md:pt-16">
               {error && (
                 <div className="w-full p-4 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm">
                   {error}
@@ -2377,7 +2388,7 @@ export default function App() {
             </section>
 
             {/* Video Action Section */}
-            <div className="flex flex-col items-center gap-4 w-full">
+            <div className="flex flex-col items-center gap-4 w-full pt-12 md:pt-16">
               {videoError && (
                 <div className="w-full p-4 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm">
                   {videoError}
@@ -2760,7 +2771,7 @@ export default function App() {
             </section>
 
             {/* American Tale Action Section */}
-            <div className="flex flex-col items-center gap-4 w-full">
+            <div className="flex flex-col items-center gap-4 w-full pt-12 md:pt-16">
               {americanError && (
                 <div className="w-full p-4 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm">
                   {americanError}
@@ -3380,7 +3391,11 @@ export default function App() {
             </div>
           </section>
         )}
+            </motion.div>
+          </AnimatePresence>
+        </div>
       </main>
     </div>
-  );
+  </div>
+);
 }

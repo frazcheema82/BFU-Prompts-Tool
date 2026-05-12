@@ -607,19 +607,20 @@ export async function enhanceScript(
   const ai = getGenAI(apiKey);
   const model = 'gemini-3-flash-preview';
 
-  const systemInstruction = `You are a world-class YouTube Script Doctor and Growth Strategist.
-Your goal is to take a raw script and title, analyze its niche, and rewrite it for maximum virality and retention.
+  const systemInstruction = `You are a world-class YouTube Script Doctor and Growth Strategist. 
+You understand exactly how the Gemini/YouTube recommendation algorithms analyze content for quality vs. "slop".
 
 MISSION:
-1. Identify the high-level Niche, the more specific Sub-Niche, and the ultra-targeted Micro-Niche.
-2. Rewrite and polish the script using the "YouTube Virality Framework":
-   - Strong Hook: The first 30 seconds must grab attention immediately and maintain high retention.
-   - Pacing: Maintain high energy and clear narrative flow throughout the video.
-   - Algorithmic Optimization: Use high-reach keywords and phrases that trigger the YouTube recommendation engine naturally.
-   - Anti-AI Slop: Ensure the language is vibrant, human-like, and strictly avoids generic AI-generated patterns (no repetitive transitions, no over-the-top formal filler, no robotic summaries).
-   - Reach & Engagement: Rewrite it to ensure it gets maximum reach and doesn't get suppressed as "dead content" by Gemini or YouTube's quality filters.
+1. Deep Analysis: Based on the Title and Script, identify the primary Niche, the specific Sub-Niche, and the hyper-targeted Micro-Niche.
+2. Ranking Optimization: Apply the exact methods used by Gemini/YouTube systems to categorize and "rank" high-quality scripts for reach. 
+3. Anti-Slop Filter: Detect and remove any patterns that trigger the "AI Slop" or "Low Quality" filters which cause content to be "killed" or shadow-banned in the feed.
+4. Retention Engineering: 
+   - Optimize the Hook for maximum initial retention.
+   - Inject narrative tension and high-value transitions to prevent viewers from dropping off.
+   - Use vibrant, evocative language that signals "Expert Craftsmanship" to the ranking engine.
+5. Strategic Rewriting: Rewrite, polish, and fix the script so it MUST go viral and achieves maximum organic reach.
 
-Deliver the result in a raw JSON object.`;
+Deliver the result as a raw JSON object.`;
 
   const contents = [`Title: ${truncate(title, 2000)}\nOriginal Script:\n${truncate(script, 100000)}`];
 
@@ -791,5 +792,68 @@ ${truncate(script, 100000)}
     console.error("Error generating Deep Scene Prompts:", error);
     throw new Error(formatError(error)); // Keep signature
   }
+}
+
+export interface AdminAdviceResult {
+  suggestions: {
+    title: string;
+    description: string;
+    priority: 'low' | 'medium' | 'high';
+  }[];
+  chatbotResponse?: string;
+}
+
+export async function generateAdminAdvice(
+  stats: {
+    totalUsers: number;
+    totalGenerations: number;
+    pendingRequests: number;
+    activeKeys: number;
+    recentErrors: number;
+  },
+  userMessage?: string,
+  apiKey?: string
+): Promise<AdminAdviceResult> {
+  const ai = getGenAI(apiKey || '');
+  const model = 'gemini-3-flash-preview';
+
+  const systemInstruction = `You are "Aura", the AI System Architect and Admin Assistant for BFU Prompts.
+Your goal is to help the administrator manage the platform, analyze site health, and provide growth strategies.
+
+Current Platform Stats:
+- Total Users with Access: ${stats.totalUsers}
+- Active API Keys: ${stats.activeKeys}
+- Total Generations: ${stats.totalGenerations}
+- Pending Access/Key Requests: ${stats.pendingRequests}
+- Recent Generation Errors: ${stats.recentErrors}
+
+If the user provides a message, act as a helpful chatbot who can answer business and technical questions about this project.
+If no message is provided, your goal is to generate 3 actionable "Daily Suggestions" for the admin to improve or manage the site.
+
+Suggestions should focus on things like:
+- Scaling the user base.
+- Optimizing API key usage.
+- Handling pending requests.
+- Improving prompt quality for users.
+- General maintenance or feature ideas.
+
+Output format MUST BE JSON:
+{
+  "suggestions": [
+     { "title": "short title", "description": "detailed explanation", "priority": "low | medium | high" }
+  ],
+  "chatbotResponse": "Optional text response if userMessage was provided"
+}`;
+
+  const response = await ai.models.generateContent({
+    model,
+    contents: userMessage || "Generate daily suggestions for the admin.",
+    config: {
+      systemInstruction,
+      responseMimeType: 'application/json'
+    }
+  });
+
+  return JSON.parse(response.text.trim());
 }
 
