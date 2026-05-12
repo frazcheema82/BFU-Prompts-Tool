@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, FileText, Copy, Check, Loader2, Sparkles, Download, Palette, Video, Image as ImageIcon, Trash2, User, BookOpen, Calculator, History as HistoryIcon, Clock, Plus, ArrowRight, Wand2, LogOut, KeyRound, ShieldAlert, Stethoscope, ScrollText, Menu } from 'lucide-react';
+import { Upload, FileText, Copy, Check, Loader2, Sparkles, Download, Palette, Video, Image as ImageIcon, Trash2, User, BookOpen, Calculator, History as HistoryIcon, Clock, Plus, ArrowRight, Wand2, LogOut, KeyRound, ShieldAlert, Stethoscope, ScrollText, Menu, Zap } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { generatePrompts, generateVideoPrompts, estimateAmericanTalePrompts, generateAmericanTalePrompts, generateChannelStrategy, generateDeepScenePrompts, PromptGenerationResult, ChannelStrategyResult, extractCharacters, CharacterDetail, analyzeAndSuggestStyle, StyleRecommendation, enhanceScript, EnhancedScriptResult } from './services/geminiService';
+import Markdown from 'react-markdown';
+import { generatePrompts, generateVideoPrompts, estimateAmericanTalePrompts, generateAmericanTalePrompts, generateChannelStrategy, generateDeepScenePrompts, PromptGenerationResult, ChannelStrategyResult, extractCharacters, CharacterDetail, analyzeAndSuggestStyle, StyleRecommendation, enhanceScript, EnhancedScriptResult, ScriptStrategyResult, detectTargetAudience, analyzeScriptStrategy, generateScriptPart } from './services/geminiService';
 import { useAuth } from './contexts/AuthContext';
 import { collection, onSnapshot, addDoc, query, where, updateDoc, doc } from 'firebase/firestore';
 import { db } from './services/firebaseService';
@@ -64,7 +65,7 @@ export default function App() {
 
 
 
-  const [activeTab, setActiveTab] = useState<'image' | 'video' | 'american' | 'history'>('image');
+  const [activeTab, setActiveTab] = useState<'image' | 'video' | 'american' | 'channel' | 'script' | 'history'>('image');
 
   // --- IMAGE PROMPTS STATE ---
   const [title, setTitle] = useState('');
@@ -93,6 +94,20 @@ export default function App() {
   const [enableSceneDetection, setEnableSceneDetection] = useState(false);
   const [enableEmotionAnalysis, setEnableEmotionAnalysis] = useState(false);
   const [targetAI, setTargetAI] = useState('Default');
+
+  // --- VIRAL SCRIPT ARCHITECT STATE ---
+  const [scriptNiche, setScriptNiche] = useState('');
+  const [scriptTitle, setScriptTitle] = useState('');
+  const [scriptLanguage, setScriptLanguage] = useState('');
+  const [scriptCountry, setScriptCountry] = useState('');
+  const [isSuggestingAudience, setIsSuggestingAudience] = useState(false);
+  const [scriptStage, setScriptStage] = useState<'input' | 'analysis' | 'generation'>('input');
+  const [scriptStrategy, setScriptStrategy] = useState<ScriptStrategyResult | null>(null);
+  const [scriptPreferredWords, setScriptPreferredWords] = useState<number>(0);
+  const [scriptParts, setScriptParts] = useState<string[]>([]);
+  const [isGeneratingScript, setIsGeneratingScript] = useState(false);
+  const [scriptError, setScriptError] = useState<string | null>(null);
+  const [currentScriptPart, setCurrentScriptPart] = useState(0);
 
   // --- CHARACTER EXTRACTION & UPLOAD (IMAGE PROMPTS) ---
   const [extractedChars, setExtractedChars] = useState<CharacterDetail[] | null>(null);
@@ -1039,6 +1054,77 @@ export default function App() {
     setAmericanProgress(0);
   };
 
+  // --- VIRAL SCRIPT ARCHITECT LOGIC ---
+  const handleDetectAudience = async () => {
+    if (!scriptNiche || !scriptTitle) return;
+    setIsSuggestingAudience(true);
+    try {
+      const effectiveKey = getEffectiveApiKey();
+      const res = await detectTargetAudience(scriptNiche, scriptTitle, effectiveKey);
+      setScriptLanguage(res.language);
+      setScriptCountry(res.country);
+    } catch (err: any) {
+      console.error(err);
+    } finally {
+      setIsSuggestingAudience(false);
+    }
+  };
+
+  const handleStartAnalysis = async () => {
+    if (!scriptNiche || !scriptTitle || !scriptLanguage || !scriptCountry) return;
+    setIsGeneratingScript(true);
+    setScriptError(null);
+    try {
+      const effectiveKey = getEffectiveApiKey();
+      const strategy = await analyzeScriptStrategy({
+        niche: scriptNiche,
+        title: scriptTitle,
+        language: scriptLanguage,
+        country: scriptCountry
+      }, effectiveKey);
+      setScriptStrategy(strategy);
+      setScriptPreferredWords(strategy.recommendedWordCount);
+      setScriptStage('analysis');
+    } catch (err: any) {
+      setScriptError(err.message || 'Analysis failed');
+    } finally {
+      setIsGeneratingScript(false);
+    }
+  };
+
+  const handleGenerateNextPart = async () => {
+    if (!scriptStrategy) return;
+    setIsGeneratingScript(true);
+    setScriptError(null);
+    try {
+      const effectiveKey = getEffectiveApiKey();
+      const part = await generateScriptPart({
+        strategy: scriptStrategy,
+        partIndex: currentScriptPart,
+        totalParts: scriptStrategy.outline.length,
+        targetWords: scriptPreferredWords,
+        previousContent: scriptParts.join('\n\n'),
+        language: scriptLanguage
+      }, effectiveKey);
+      
+      setScriptParts(prev => [...prev, part]);
+      setCurrentScriptPart(prev => prev + 1);
+      setScriptStage('generation');
+    } catch (err: any) {
+      setScriptError(err.message || 'Generation failed');
+    } finally {
+      setIsGeneratingScript(false);
+    }
+  };
+
+  const resetScriptModule = () => {
+    setScriptStage('input');
+    setScriptStrategy(null);
+    setScriptParts([]);
+    setCurrentScriptPart(0);
+    setScriptError(null);
+  };
+
   // --- CHANNEL PLANNER HANDLERS ---
   const handleGenerateChannelPlan = async () => {
     setIsChannelGenerating(true);
@@ -1376,6 +1462,7 @@ export default function App() {
             { id: 'image', icon: ImageIcon, label: 'Image Engine' },
             { id: 'video', icon: Video, label: 'Video Storyboard' },
             { id: 'american', icon: BookOpen, label: 'American Tales' },
+            { id: 'script', icon: ScrollText, label: 'Viral Script' },
             { id: 'channel', icon: Video, label: 'Channel Planner' },
             { id: 'history', icon: HistoryIcon, label: 'Recent Cycles' },
           ].map((item) => (
@@ -2913,7 +3000,341 @@ export default function App() {
             )}
           </>
         )}
-        
+
+        {/* ================= VIRAL SCRIPT ARCHITECT TAB ================= */}
+        {activeTab === 'script' && (
+          <>
+            <div className="flex items-center justify-between mb-8 pb-4 border-b border-gray-200">
+               <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+                 <ScrollText className="w-6 h-6 text-indigo-600" />
+                 Viral Script Architect
+               </h2>
+               <button 
+                onClick={resetScriptModule}
+                className="px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-900 flex items-center gap-2 bg-white border border-gray-200 rounded-xl shadow-sm transition-colors"
+               >
+                 <Plus className="w-4 h-4" /> Reset Module
+               </button>
+            </div>
+
+            {/* ERROR DISPLAY */}
+            {scriptError && (
+              <div className="mb-6 p-4 bg-red-50 border border-red-100 rounded-2xl flex items-start gap-3 text-red-700 animate-in fade-in slide-in-from-top-2">
+                <ShieldAlert className="w-5 h-5 shrink-0 mt-0.5" />
+                <p className="text-sm font-medium">{scriptError}</p>
+              </div>
+            )}
+
+            {/* STAGE 1: INPUT */}
+            {scriptStage === 'input' && (
+              <motion.section 
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="bg-white rounded-3xl shadow-sm border border-gray-200 overflow-hidden"
+              >
+                <div className="p-8">
+                  <div className="flex items-center gap-3 mb-8">
+                    <div className="w-12 h-12 bg-indigo-50 rounded-2xl flex items-center justify-center text-indigo-600 ring-4 ring-indigo-50/50">
+                      <Wand2 className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-bold text-gray-900">Stage 1: Core Intelligence</h3>
+                      <p className="text-sm text-gray-500 mt-1">Initialize the algorithmic foundation of your script.</p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-6">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="space-y-2">
+                        <label className="text-sm font-bold text-gray-700 ml-1">Channel Niche</label>
+                        <input 
+                          type="text"
+                          placeholder="e.g. Historical Mystery, Tech Documentaries..."
+                          value={scriptNiche}
+                          onChange={(e) => setScriptNiche(e.target.value)}
+                          className="w-full px-5 py-4 bg-gray-50 border border-gray-200 rounded-2xl focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all text-sm font-medium"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-bold text-gray-700 ml-1">Proposed Video Title</label>
+                        <input 
+                          type="text"
+                          placeholder="e.g. The Secret History of the Pyramids..."
+                          value={scriptTitle}
+                          onChange={(e) => setScriptTitle(e.target.value)}
+                          className="w-full px-5 py-4 bg-gray-50 border border-gray-200 rounded-2xl focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all text-sm font-medium"
+                        />
+                      </div>
+                    </div>
+
+                      <div className="bg-gray-50/50 p-6 rounded-3xl border border-gray-200/50 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <label className="text-sm font-bold text-gray-700 ml-1">Algorithm Target Audience</label>
+                        <button 
+                          onClick={handleDetectAudience}
+                          disabled={isSuggestingAudience || !scriptNiche || !scriptTitle}
+                          className="text-xs font-bold text-indigo-600 hover:text-indigo-800 disabled:opacity-50 flex items-center gap-1.5 px-3 py-1.5 bg-white border border-indigo-100 rounded-xl shadow-sm transition-all"
+                        >
+                          {isSuggestingAudience ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                          AI Decide Best Audience
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="space-y-1">
+                          <span className="text-[10px] font-bold text-gray-400 uppercase ml-1">Primary Language</span>
+                          <input 
+                            type="text"
+                            placeholder="e.g. Urdu, English..."
+                            value={scriptLanguage}
+                            onChange={(e) => setScriptLanguage(e.target.value)}
+                            className="w-full px-4 py-3.5 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 transition-all text-sm font-medium"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <span className="text-[10px] font-bold text-gray-400 uppercase ml-1">Target Region</span>
+                          <input 
+                            type="text"
+                            placeholder="e.g. Pakistan, Global..."
+                            value={scriptCountry}
+                            onChange={(e) => setScriptCountry(e.target.value)}
+                            className="w-full px-4 py-3.5 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 transition-all text-sm font-medium"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={handleStartAnalysis}
+                      disabled={isGeneratingScript || !scriptNiche || !scriptTitle || !scriptLanguage || !scriptCountry}
+                      className="w-full py-5 bg-gradient-to-r from-indigo-600 to-indigo-500 text-white font-bold rounded-2xl shadow-xl shadow-indigo-100 hover:shadow-indigo-200 disabled:opacity-50 transition-all flex items-center justify-center gap-3 active:scale-[0.99]"
+                    >
+                      {isGeneratingScript ? (
+                        <><Loader2 className="w-6 h-6 animate-spin" /> Analyzing Algorithmic Strategy...</>
+                      ) : (
+                        <><Zap className="w-6 h-6" /> Start Deep Analysis</>
+                      ) }
+                    </button>
+                  </div>
+                </div>
+              </motion.section>
+            )}
+
+            {/* STAGE 2: ANALYSIS */}
+            {scriptStage === 'analysis' && scriptStrategy && (
+              <motion.section 
+                initial={{ opacity: 0, scale: 0.98 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="space-y-8"
+              >
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                  {/* Left Column: Categorization */}
+                  <div className="lg:col-span-1 space-y-6">
+                    <div className="bg-white p-8 rounded-3xl border border-gray-200 shadow-sm relative overflow-hidden text-balance">
+                      <div className="absolute top-0 right-0 p-4 opacity-5">
+                         <ShieldAlert className="w-24 h-24" />
+                      </div>
+                      <h3 className="text-xs font-black text-indigo-600 uppercase tracking-[0.2em] mb-6 flex items-center gap-2 text-nowrap">
+                        <Palette className="w-4 h-4" /> Ranking Identity
+                      </h3>
+                      <div className="space-y-4">
+                        <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100">
+                           <span className="block text-[10px] text-gray-400 font-bold uppercase mb-1">Niche</span>
+                           <span className="font-bold text-gray-900">{scriptStrategy.niche}</span>
+                        </div>
+                        <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100">
+                           <span className="block text-[10px] text-gray-400 font-bold uppercase mb-1">Sub-Niche</span>
+                           <span className="font-bold text-gray-900">{scriptStrategy.subNiche}</span>
+                        </div>
+                        <div className="bg-indigo-50 p-4 rounded-2xl border border-indigo-100">
+                           <span className="block text-[10px] text-indigo-400 font-bold uppercase mb-1 tracking-wider">Micro-Niche Target</span>
+                           <span className="font-black text-indigo-700 italic">{scriptStrategy.microNiche}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="bg-gray-900 text-white p-8 rounded-3xl shadow-xl shadow-gray-200 border border-gray-800">
+                      <h3 className="text-xs font-black text-indigo-400 uppercase tracking-[0.2em] mb-6 flex items-center gap-2 text-nowrap">
+                        <Clock className="w-4 h-4" /> Format Metrics
+                      </h3>
+                      <div className="space-y-6">
+                         <div>
+                            <label className="block text-sm font-bold text-gray-400 mb-2">Target Word Count</label>
+                            <input 
+                              type="number"
+                              value={scriptPreferredWords}
+                              onChange={(e) => setScriptPreferredWords(Number(e.target.value))}
+                              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-xl font-black text-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                            />
+                            <p className="text-[10px] text-gray-500 mt-2 leading-relaxed">
+                              {scriptStrategy.wordCountJustification}
+                            </p>
+                         </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right Column: Strategy */}
+                  <div className="lg:col-span-2 space-y-8">
+                    <div className="bg-white p-8 rounded-3xl border border-gray-200 shadow-sm">
+                       <h3 className="text-xs font-black text-indigo-600 uppercase tracking-[0.2em] mb-6 flex items-center gap-2 text-nowrap">
+                        <Sparkles className="w-4 h-4" /> Algorithmic Strategy
+                      </h3>
+                      <div className="bg-indigo-50/30 p-6 rounded-2xl border border-indigo-100 mb-8">
+                         <h4 className="text-sm font-bold text-gray-900 mb-2">Anti-Slop Approach:</h4>
+                         <p className="text-sm text-gray-700 leading-relaxed font-medium capitalize">{scriptStrategy.strategicApproach}</p>
+                      </div>
+
+                      <div className="space-y-4">
+                        <h4 className="text-sm font-bold text-gray-900 ml-1 italic">Ranking Triggers (Bypassing AI Quality Filters)</h4>
+                        <div className="flex flex-wrap gap-2">
+                          {scriptStrategy.rankingTriggers.map((trigger, i) => (
+                            <span key={i} className="px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold text-gray-600">
+                              {trigger}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="bg-white p-8 rounded-3xl border border-gray-200 shadow-sm">
+                      <h3 className="text-xs font-black text-indigo-600 uppercase tracking-[0.2em] mb-6">Execution Outline</h3>
+                      <div className="space-y-4">
+                        {scriptStrategy.outline.map((step, i) => (
+                          <div key={i} className="flex gap-4 group">
+                             <div className="flex flex-col items-center">
+                                <div className="w-8 h-8 rounded-full bg-gray-100 border-2 border-white shadow-sm flex items-center justify-center text-xs font-black text-gray-400 group-hover:bg-indigo-100 group-hover:text-indigo-600 transition-colors">
+                                   {i + 1}
+                                </div>
+                                {i < scriptStrategy.outline.length - 1 && <div className="w-0.5 h-full bg-gray-100 mt-2" />}
+                             </div>
+                             <div className="pb-6">
+                                <h5 className="text-sm font-bold text-gray-900 mb-1">{step.heading}</h5>
+                                <p className="text-xs text-gray-500 font-medium italic">{step.focus}</p>
+                             </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={handleGenerateNextPart}
+                      disabled={isGeneratingScript}
+                      className="w-full py-5 bg-indigo-600 text-white font-bold rounded-2xl shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all flex items-center justify-center gap-3"
+                    >
+                      {isGeneratingScript ? (
+                        <><Loader2 className="w-6 h-6 animate-spin" /> Constructing Initial Foundations...</>
+                      ) : (
+                        <><Wand2 className="w-6 h-6" /> Confirm Blueprint & Start Generation</>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </motion.section>
+            )}
+
+            {/* STAGE 3: GENERATION */}
+            {scriptStage === 'generation' && scriptStrategy && (
+               <motion.section 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="space-y-8"
+              >
+                {/* Generation Status Bar */}
+                <div className="bg-white p-6 rounded-3xl border border-gray-200 shadow-sm flex items-center justify-between">
+                   <div className="flex items-center gap-4">
+                      <div className="w-3 h-3 bg-indigo-600 rounded-full animate-pulse shadow-[0_0_12px_rgba(79,70,229,0.5)]" />
+                      <div>
+                        <h4 className="text-sm font-black text-gray-900">
+                          {currentScriptPart >= scriptStrategy.outline.length ? 'Viral Masterpiece Complete' : `Architecting Part ${currentScriptPart + 1} of ${scriptStrategy.outline.length}`}
+                        </h4>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <p className="text-xs text-gray-400 font-medium tracking-wide">
+                            {currentScriptPart >= scriptStrategy.outline.length ? 'Final review and export phase' : `Focus: ${scriptStrategy.outline[currentScriptPart]?.heading}`}
+                          </p>
+                          <span className="text-[10px] px-1.5 py-0.5 bg-indigo-50 text-indigo-500 rounded font-bold uppercase">Humanized Model</span>
+                        </div>
+                      </div>
+                   </div>
+                   
+                   <div className="flex items-center gap-3">
+                      <button 
+                        onClick={() => {
+                          const fullTxt = scriptParts.join('\n\n');
+                          navigator.clipboard.writeText(fullTxt);
+                        }}
+                        className="p-2 text-gray-400 hover:text-indigo-600 transition-colors"
+                        title="Copy All"
+                      >
+                         <Copy className="w-5 h-5" />
+                      </button>
+                      <button 
+                        onClick={() => {
+                          const fullTxt = scriptParts.join('\n\n');
+                          const blob = new Blob([fullTxt], { type: 'text/plain' });
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement('a');
+                          a.href = url;
+                          a.download = `${scriptTitle.replace(/\s+/g, '_')}_Viral_Script.txt`;
+                          a.click();
+                        }}
+                        className="p-2 text-gray-400 hover:text-emerald-600 transition-colors"
+                        title="Download All"
+                      >
+                         <Download className="w-5 h-5" />
+                      </button>
+                   </div>
+                </div>
+
+                {/* Script Display */}
+                <div className="bg-white rounded-3xl border border-gray-200 shadow-sm overflow-hidden min-h-[600px] flex flex-col">
+                  <div className="flex-1 p-8 md:p-12 overflow-y-auto custom-scrollbar bg-gray-50/30">
+                    <div className="max-w-3xl mx-auto space-y-12">
+                       {scriptParts.map((part, i) => (
+                         <motion.div 
+                          initial={{ opacity: 0, y: 30 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          key={i} 
+                          className="prose prose-indigo max-w-none prose-p:text-gray-700 prose-p:leading-[1.8] prose-p:text-lg prose-headings:text-gray-900 prose-headings:font-black prose-p:mb-8"
+                        >
+                           <div className="markdown-body">
+                             <Markdown>{part}</Markdown>
+                           </div>
+                         </motion.div>
+                       ))}
+                       {isGeneratingScript && (
+                         <div className="flex flex-col items-center justify-center p-12 space-y-4 opacity-50">
+                            <Loader2 className="w-10 h-10 text-indigo-600 animate-spin" />
+                            <p className="text-sm font-bold text-gray-500 animate-pulse">Architecting next sequence...</p>
+                         </div>
+                       )}
+                    </div>
+                  </div>
+
+                  <div className="p-6 bg-white border-t border-gray-100 flex items-center justify-center">
+                    {currentScriptPart < scriptStrategy.outline.length ? (
+                      <button 
+                        disabled={isGeneratingScript}
+                        onClick={handleGenerateNextPart}
+                        className="flex items-center gap-3 px-8 py-4 bg-gray-900 text-white font-bold rounded-2xl hover:bg-gray-800 disabled:opacity-50 transition-all shadow-xl shadow-gray-200"
+                      >
+                         {isGeneratingScript ? (
+                           <><Loader2 className="w-5 h-5 animate-spin" /> Processing Narrative...</>
+                         ) : (
+                           <><ArrowRight className="w-5 h-5" /> Construct Next Sequence</>
+                         )}
+                      </button>
+                    ) : (
+                      <div className="flex items-center gap-2 text-emerald-600 font-bold italic">
+                        <Check className="w-5 h-5" /> Entire Outline Synthesized
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </motion.section>
+            )}
+          </>
+        )}
+
         {/* ================= CHANNEL PLANNER TAB ================= */}
         {activeTab === 'channel' && (
           <>

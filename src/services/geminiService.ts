@@ -70,8 +70,11 @@ function truncate(str: string, max = 100000): string {
 
 function formatError(error: any): string {
   const msg = error.message || String(error);
+  if (msg.includes("credits are depleted") || msg.includes("prepayment")) {
+    return "Your Gemini API prepayment credits are exhausted. Please check your billing at ai.studio or use a different API key.";
+  }
   if (msg.includes("429") || msg.toLowerCase().includes("quota")) {
-    return "Error 429: API limit reached. Please wait a moment and try again.";
+    return "Error 429: API limit reached (Quota Exhausted). Please wait a moment or check your API key status.";
   }
   if (msg.includes("400") || msg.toLowerCase().includes("context")) {
     return "Error 400: Script is too long or context window exceeded.";
@@ -794,6 +797,106 @@ ${truncate(script, 100000)}
   }
 }
 
+export interface ScriptStrategyResult {
+  niche: string;
+  subNiche: string;
+  microNiche: string;
+  recommendedWordCount: number;
+  wordCountJustification: string;
+  strategicApproach: string;
+  rankingTriggers: string[];
+  outline: {
+    heading: string;
+    focus: string;
+  }[];
+}
+
+export async function detectTargetAudience(
+  niche: string,
+  title: string,
+  apiKey?: string
+): Promise<{ language: string; country: string; reasoning: string }> {
+  try {
+    const ai = getGenAI(apiKey || '');
+    const model = 'gemini-3-flash-preview';
+
+    const systemInstruction = `You are a Global Audience Analyst. Based on a YouTube Niche and Title, predict the most profitable and high-reach target audience.
+Return JSON: { "language": "string", "country": "string", "reasoning": "brief explanation" }`;
+
+    const response = await callGemini(ai, model, [{ role: 'user', parts: [{ text: `Niche: ${niche}\nTitle: ${title}` }] }], { systemInstruction, responseMimeType: 'application/json' });
+
+    return JSON.parse(response.text.trim());
+  } catch (error: any) {
+    throw new Error(formatError(error));
+  }
+}
+
+export async function analyzeScriptStrategy(
+  data: { niche: string; title: string; language: string; country: string; userPreferredLength?: number },
+  apiKey?: string
+): Promise<ScriptStrategyResult> {
+  try {
+    const ai = getGenAI(apiKey || '');
+    const model = 'gemini-3-flash-preview';
+
+    const systemInstruction = `You are the "Viral Script Strategist". Your goal is to analyze a video concept and build a strategy that forces the YouTube/Gemini ranking algorithm to push the content.
+
+RULES:
+1. Identify Niche, Sub-Niche, and Micro-Niche.
+2. Suggest word count based on retention data for this micro-niche.
+3. Explain the "Anti-Slop" strategy to prevent the script from being flagged as low-quality AI content.
+4. Create a logic-based outline for a high-retention script.
+5. DO NOT provide the script yet. Only the blueprint.
+
+Return JSON matching ScriptStrategyResult interface.`;
+
+    const response = await callGemini(ai, model, [{ role: 'user', parts: [{ text: JSON.stringify(data) }] }], { systemInstruction, responseMimeType: 'application/json' });
+
+    return JSON.parse(response.text.trim());
+  } catch (error: any) {
+    throw new Error(formatError(error));
+  }
+}
+
+export async function generateScriptPart(
+  params: {
+    strategy: ScriptStrategyResult;
+    partIndex: number;
+    totalParts: number;
+    targetWords: number;
+    previousContent?: string;
+    language: string;
+  },
+  apiKey?: string
+): Promise<string> {
+  try {
+    const ai = getGenAI(apiKey || '');
+    const model = 'gemini-3-flash-preview';
+
+    const currentSection = params.strategy.outline[params.partIndex];
+
+    const systemInstruction = `You are the "Master Script Architect". You are writing Part ${params.partIndex + 1} of ${params.totalParts} for a viral YouTube script.
+
+STRICT WRITING RULES:
+1. FORMAT: Use Markdown Headings (###) for sections and standard paragraphs.
+2. NO TECHNICAL CUES: Never mention camera angles, B-roll, images, or "Video starts here". ONLY the spoken word.
+3. ANTI-SLOP: Use vibrant, human-like, evocative language. Avoid generic AI transitions like "In conclusion", "Moreover", or "Firstly".
+4. RANKING OPTIMIZATION: Inject narrative tension, expert terminology, and high-value phrasing that signals authority to search engines.
+5. CONTINUITY: If previous content exists, ensure a seamless flow without repetition.
+6. VOLUME: Aim for roughly ${Math.round(params.targetWords / params.totalParts)} words for this segment.
+7. LANGUAGE: Write strictly in ${params.language}.
+
+Current Section Focus: ${currentSection.heading} - ${currentSection.focus}`;
+
+    const contents = [{ role: 'user', parts: [{ text: params.previousContent ? `Previous Part Context: ${params.previousContent}` : "Start the script with a powerful hook." }] }];
+    const response = await callGemini(ai, model, contents, { systemInstruction });
+
+    return response.text.trim();
+  } catch (error: any) {
+    throw new Error(formatError(error));
+  }
+}
+
 export interface AdminAdviceResult {
   suggestions: {
     title: string;
@@ -814,10 +917,11 @@ export async function generateAdminAdvice(
   userMessage?: string,
   apiKey?: string
 ): Promise<AdminAdviceResult> {
-  const ai = getGenAI(apiKey || '');
-  const model = 'gemini-3-flash-preview';
+  try {
+    const ai = getGenAI(apiKey || '');
+    const model = 'gemini-3-flash-preview';
 
-  const systemInstruction = `You are "Aura", the AI System Architect and Admin Assistant for BFU Prompts.
+    const systemInstruction = `You are "Aura", the AI System Architect and Admin Assistant for BFU Prompts.
 Your goal is to help the administrator manage the platform, analyze site health, and provide growth strategies.
 
 Current Platform Stats:
@@ -845,15 +949,14 @@ Output format MUST BE JSON:
   "chatbotResponse": "Optional text response if userMessage was provided"
 }`;
 
-  const response = await ai.models.generateContent({
-    model,
-    contents: userMessage || "Generate daily suggestions for the admin.",
-    config: {
+    const response = await callGemini(ai, model, [{ role: 'user', parts: [{ text: userMessage || "Generate daily suggestions for the admin." }] }], {
       systemInstruction,
       responseMimeType: 'application/json'
-    }
-  });
+    });
 
-  return JSON.parse(response.text.trim());
+    return JSON.parse(response.text.trim());
+  } catch (error: any) {
+    throw new Error(formatError(error));
+  }
 }
 
