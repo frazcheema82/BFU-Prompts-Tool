@@ -52,14 +52,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (currUser) {
         
         let allowed = false;
-        if (currUser.email === 'frazcheema82@gmail.com') {
+        if (currUser.email?.trim().toLowerCase() === 'frazcheema82@gmail.com') {
            allowed = true;
         } else if (currUser.email) {
            try {
-             // Check if user is in allowed_users
-             const q = query(collection(db, 'allowed_users'), where('email', '==', currUser.email.toLowerCase()));
+             // Check if user is in allowed_users (case-insensitive)
+             const q = query(collection(db, 'allowed_users'));
              const qSnap = await getDocs(q);
-             if (!qSnap.empty) {
+             let found = false;
+             qSnap.forEach(doc => {
+               if (doc.data().email?.trim().toLowerCase() === currUser.email?.trim().toLowerCase()) {
+                 found = true;
+               }
+             });
+             if (found) {
                allowed = true;
              }
            } catch (e) {
@@ -111,16 +117,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const loginWithGoogle = async () => {
-    setIsAllowed(null); // reset so we can show proper errors
-    const provider = new GoogleAuthProvider();
-    await signInWithPopup(auth, provider);
+    try {
+      setIsAllowed(null); // reset so we can show proper errors
+      const provider = new GoogleAuthProvider();
+      await signInWithPopup(auth, provider);
+    } catch (error: any) {
+      console.error("Login error:", error);
+      if (error.code === 'auth/unauthorized-domain') {
+        alert(`Failed to sign in. The domain '${window.location.hostname}' is not authorized in Firebase. You must add it to Authorized Domains in your Firebase Console under Authentication > Settings > Authorized domains.`);
+      } else {
+        alert(`Failed to sign in: ${error.message}`);
+      }
+    }
   };
 
   const logout = async () => {
     await signOut(auth);
   };
 
-  const isAdmin = profile?.isAdmin === true || user?.email === 'frazcheema82@gmail.com';
+  const isAdmin = profile?.isAdmin === true || user?.email?.trim().toLowerCase() === 'frazcheema82@gmail.com';
 
   return (
     <AuthContext.Provider value={{ user, profile, loading, loginWithGoogle, logout, isAdmin, isAllowed }}>

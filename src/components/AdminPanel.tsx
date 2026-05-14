@@ -1,27 +1,22 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { collection, query, orderBy, onSnapshot, addDoc, updateDoc, deleteDoc, doc, getDocs } from 'firebase/firestore';
+import { collection, query, orderBy, onSnapshot, addDoc, updateDoc, deleteDoc, doc, getDocs, setDoc } from 'firebase/firestore';
 import { db } from '../services/firebaseService';
 import { useAuth } from '../contexts/AuthContext';
-import { Trash2, Plus, RefreshCw, XCircle, CheckCircle, Bot, MessageSquare, Lightbulb, Send, Loader2, Sparkles, User, Key, BarChart3, Settings, ShieldAlert, ArrowRight, Clock, Menu } from 'lucide-react';
+import { Trash2, Plus, RefreshCw, XCircle, CheckCircle, Bot, MessageSquare, Lightbulb, Send, Loader2, Sparkles, User, Key, BarChart3, Settings, ShieldAlert, ArrowRight, Clock, Menu, Eye, EyeOff } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { generateAdminAdvice, AdminAdviceResult } from '../services/geminiService';
+import { generateAdminAdvice, AdminAdviceResult, verifyApiKey } from '../services/geminiService';
 
 export default function AdminPanel() {
   const { isAdmin, user } = useAuth();
-  const [apiKeys, setApiKeys] = useState<{ id: string; name: string; keyValue: string; assignedTo?: string }[]>([]);
   const [generations, setGenerations] = useState<any[]>([]);
-  const [apiKeyRequests, setApiKeyRequests] = useState<any[]>([]);
   const [accessRequests, setAccessRequests] = useState<any[]>([]);
   const [allowedUsers, setAllowedUsers] = useState<any[]>([]);
-  const [newKeyName, setNewKeyName] = useState('');
-  const [newKeyValue, setNewKeyValue] = useState('');
-  const [newKeyAssignedTo, setNewKeyAssignedTo] = useState('');
   const [newAllowedEmail, setNewAllowedEmail] = useState('');
   const [loading, setLoading] = useState(true);
 
   // AI Chatbot & Suggestions State
-  const [activeAdminTab, setActiveAdminTab] = useState<'overview' | 'users' | 'keys' | 'history' | 'ai'>('overview');
+  const [activeAdminTab, setActiveAdminTab] = useState<'overview' | 'users' | 'history' | 'ai' | 'settings'>('overview');
   const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'ai'; content: string }[]>([
     { role: 'ai', content: 'Hello Admin! I am Aura, your AI assistant. How can I help you manage BFU Prompts today?' }
   ]);
@@ -40,24 +35,17 @@ export default function AdminPanel() {
     scrollToBottom();
   }, [chatMessages]);
 
-  useEffect(() => {
-    if (!isAdmin) return;
-    fetchDailySuggestions();
-  }, [isAdmin]);
-
   const fetchDailySuggestions = async (forceMessage?: string) => {
     setLoadingSuggestions(true);
     try {
       const stats = {
         totalUsers: allowedUsers.length,
         totalGenerations: generations.length,
-        pendingRequests: apiKeyRequests.length + accessRequests.length,
-        activeKeys: apiKeys.length,
+        pendingRequests: accessRequests.length,
         recentErrors: generations.filter(g => g.status === 'failed').length
       };
       
-      const adminKey = apiKeys.find(k => k.assignedTo === user?.email || !k.assignedTo)?.keyValue;
-      const result = await generateAdminAdvice(stats, forceMessage, adminKey);
+      const result = await generateAdminAdvice(stats, forceMessage, systemKey);
       
       if (result.suggestions && result.suggestions.length > 0) {
         setSuggestions(result.suggestions);
@@ -66,8 +54,11 @@ export default function AdminPanel() {
       if (result.chatbotResponse) {
         setChatMessages(prev => [...prev, { role: 'ai', content: result.chatbotResponse! }]);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Suggestions Error:", err);
+      if (forceMessage) {
+        setChatMessages(prev => [...prev, { role: 'ai', content: `Oops. I encountered an error: ${err.message || 'API Blocked'}. Please check the System Settings.` }]);
+      }
     } finally {
       setLoadingSuggestions(false);
       setIsSending(false);
@@ -86,88 +77,90 @@ export default function AdminPanel() {
     await fetchDailySuggestions(msg);
   };
 
+  const [dataError, setDataError] = useState<string | null>(null);
+
+  const [history, setHistory] = useState<any[]>([]);
+
+  // System Settings State
+  const [systemKey, setSystemKey] = useState<string>('');
+  const [isVerifyingKey, setIsVerifyingKey] = useState(false);
+  const [verificationResult, setVerificationResult] = useState<{ ok: boolean, error?: string } | null>(null);
+  const [isSavingKey, setIsSavingKey] = useState(false);
+  const [isKeyVisible, setIsKeyVisible] = useState(false);
+
   useEffect(() => {
     if (!isAdmin) return;
     
-    const qKeys = collection(db, 'api_keys');
-    const unsubKeys = onSnapshot(qKeys, (snapshot) => {
-      const keys = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
-      setApiKeys(keys);
-    }, (err) => console.error("api_keys error AdminPanel:", err));
-
-    const qReqs = query(collection(db, 'api_key_requests'), orderBy('createdAt', 'desc'));
-    const unsubReqs = onSnapshot(qReqs, (snapshot) => {
-      const reqs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
-      setApiKeyRequests(reqs.filter((r: any) => r.status === 'pending'));
-    }, (err) => console.error("api_key_requests error AdminPanel:", err));
+    // Fetch system key from config
+    const unsubKey = onSnapshot(doc(db, 'system_config', 'gemini'), (snapshot) => {
+      if (snapshot.exists()) {
+        setSystemKey(snapshot.data().keyValue || '');
+      }
+    }, (error) => {
+      console.error("AdminPanel system key error:", error);
+    });
 
     const qAccessReqs = query(collection(db, 'access_requests'), orderBy('createdAt', 'desc'));
     const unsubAccessReqs = onSnapshot(qAccessReqs, (snapshot) => {
       const reqs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
       setAccessRequests(reqs.filter((r: any) => r.status === 'pending'));
-    }, (err) => console.error("access_requests error AdminPanel:", err));
+    }, (err) => { console.error("access_requests error AdminPanel:", err); setDataError(err.message); });
 
     const qGenerations = query(collection(db, 'generations'), orderBy('createdAt', 'desc'));
     const unsubGens = onSnapshot(qGenerations, (snapshot) => {
       const gens = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setGenerations(gens);
       setLoading(false);
-    }, (err) => console.error("generations error AdminPanel:", err));
+    }, (err) => { console.error("generations error AdminPanel:", err); setDataError(err.message); });
 
     const qAllowedUsers = collection(db, 'allowed_users');
     const unsubAllowedUsers = onSnapshot(qAllowedUsers, (snapshot) => {
       const users = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setAllowedUsers(users);
-    }, (err) => console.error("allowed_users error AdminPanel:", err));
+    }, (err) => { console.error("allowed_users error AdminPanel:", err); setDataError(err.message); });
 
     return () => {
-      unsubKeys();
-      unsubReqs();
+      unsubKey();
       unsubAccessReqs();
       unsubGens();
       unsubAllowedUsers();
     };
   }, [isAdmin]);
 
-  const handleAddKey = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newKeyName.trim() || !newKeyValue.trim()) return;
-    
+  const handleVerifySystemKey = async () => {
+    if (!systemKey.trim()) return;
+    setIsVerifyingKey(true);
+    setVerificationResult(null);
     try {
-      await addDoc(collection(db, 'api_keys'), {
-        name: newKeyName,
-        keyValue: newKeyValue,
-        assignedTo: newKeyAssignedTo.trim() || '',
-        createdAt: Date.now(),
-      });
-      setNewKeyName('');
-      setNewKeyValue('');
-      setNewKeyAssignedTo('');
-    } catch (err) {
-      console.error(err);
-      alert('Error adding key');
+      const res = await verifyApiKey(systemKey);
+      setVerificationResult({ ok: res.valid, error: res.error });
+    } catch (err: any) {
+      setVerificationResult({ ok: false, error: err.message });
+    } finally {
+      setIsVerifyingKey(false);
     }
   };
 
-  const handleDeleteKey = async (id: string) => {
+  const handleSaveSystemKey = async () => {
+    if (!systemKey.trim() || isSavingKey) return;
+    setIsSavingKey(true);
     try {
-      await deleteDoc(doc(db, 'api_keys', id));
-    } catch (err) {
+      await setDoc(doc(db, 'system_config', 'gemini'), {
+        keyValue: systemKey.trim(),
+        updatedAt: Date.now(),
+        updatedBy: user?.email
+      }, { merge: true });
+      alert('System API Key saved successfully! All users will now use this key.');
+      setVerificationResult(null);
+    } catch (err: any) {
       console.error(err);
-      alert('Error deleting key');
+      alert('Error saving key: ' + err.message);
+    } finally {
+      setIsSavingKey(false);
     }
   };
 
-  const handleUpdateAssignment = async (id: string, newEmail: string) => {
-    try {
-      await updateDoc(doc(db, 'api_keys', id), {
-        assignedTo: newEmail.trim()
-      });
-    } catch (err) {
-      console.error(err);
-      alert('Error updating assignment');
-    }
-  };
+  const handleDocSetSystemKey = () => {}; // Removed unused stub
 
   const handleDeleteGeneration = async (id: string) => {
     try {
@@ -204,33 +197,6 @@ export default function AdminPanel() {
     } catch (err: any) {
       console.error(err);
       alert('Error deleting allowed user: ' + err.message);
-    }
-  };
-
-  const handleApproveRequest = async (reqId: string, email: string) => {
-    const keyVal = prompt(`Enter a new API key to assign to ${email}`);
-    if (!keyVal) return;
-    try {
-      await addDoc(collection(db, 'api_keys'), {
-        name: `Key for ${email.split('@')[0]}`,
-        keyValue: keyVal.trim(),
-        assignedTo: email,
-        createdAt: Date.now(),
-      });
-      await updateDoc(doc(db, 'api_key_requests', reqId), { status: 'approved' });
-      alert('Key assigned successfully and request approved!');
-    } catch (e) {
-      console.error(e);
-      alert('Failed to approve request');
-    }
-  };
-
-  const handleDismissRequest = async (reqId: string) => {
-    try {
-      await updateDoc(doc(db, 'api_key_requests', reqId), { status: 'rejected' });
-    } catch (e) {
-      console.error(e);
-      alert('Failed to dismiss request');
     }
   };
 
@@ -306,8 +272,8 @@ export default function AdminPanel() {
               {[
                 { id: 'overview', icon: BarChart3, label: 'Overview' },
                 { id: 'users', icon: User, label: 'User Access' },
-                { id: 'keys', icon: Key, label: 'API Management' },
                 { id: 'history', icon: RefreshCw, label: 'Global Logs' },
+                { id: 'settings', icon: Settings, label: 'System Settings' },
                 { id: 'ai', icon: Bot, label: 'Aura AI' },
               ].map((item) => (
                 <button
@@ -350,6 +316,7 @@ export default function AdminPanel() {
             <div>
               <h2 className="text-2xl lg:text-3xl font-bold text-gray-900 tracking-tight">System {activeAdminTab.charAt(0).toUpperCase() + activeAdminTab.slice(1)}</h2>
               <p className="text-sm text-gray-500 font-medium">Real-time status of the BFU Engine</p>
+              {dataError && <p className="text-sm text-red-500 font-bold mt-2">Data Error: {dataError}</p>}
             </div>
           </div>
           
@@ -375,12 +342,11 @@ export default function AdminPanel() {
                className="space-y-8"
             >
               {/* Stats Grid */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
                  {[
                    { label: 'Total Users', value: allowedUsers.length, color: 'indigo', icon: User },
                    { label: 'Daily Cycles', value: generations.length, color: 'blue', icon: Sparkles },
-                   { label: 'API Stability', value: '98.2%', color: 'green', icon: CheckCircle },
-                   { label: 'Pending Req', value: apiKeyRequests.length + accessRequests.length, color: 'orange', icon: Clock },
+                   { label: 'Pending Access', value: accessRequests.length, color: 'orange', icon: Clock },
                  ].map((stat, i) => (
                    <div key={i} className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm group hover:shadow-md transition-shadow">
                       <div className={`p-3 rounded-2xl bg-${stat.color}-50 text-${stat.color}-600 inline-block mb-4`}>
@@ -393,31 +359,7 @@ export default function AdminPanel() {
               </div>
 
               {/* Action Requirements */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                {apiKeyRequests.length > 0 && (
-                  <section className="bg-white p-6 rounded-3xl border border-orange-100 shadow-sm">
-                    <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
-                       <Key className="w-5 h-5 text-orange-600" />
-                       API Key Pipeline
-                    </h3>
-                    <div className="space-y-3">
-                      {apiKeyRequests.map(req => (
-                        <div key={req.id} className="p-4 bg-orange-50/50 rounded-2xl border border-orange-100 flex justify-between items-center">
-                           <span className="text-sm font-bold text-gray-700">{req.email}</span>
-                           <div className="flex gap-2">
-                             <button onClick={() => handleApproveRequest(req.id, req.email)} className="bg-orange-600 text-white p-2 rounded-xl hover:bg-orange-700 transition">
-                                <CheckCircle className="w-4 h-4" />
-                             </button>
-                             <button onClick={() => handleDismissRequest(req.id)} className="bg-white text-gray-400 p-2 rounded-xl border border-orange-100">
-                                <XCircle className="w-4 h-4" />
-                             </button>
-                           </div>
-                        </div>
-                      ))}
-                    </div>
-                  </section>
-                )}
-
+              <div className="grid grid-cols-1 gap-8">
                 {accessRequests.length > 0 && (
                   <section className="bg-white p-6 rounded-3xl border border-blue-100 shadow-sm">
                     <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
@@ -481,78 +423,6 @@ export default function AdminPanel() {
                        </div>
                        <button onClick={() => handleDeleteAllowedUser(u.id)} className="opacity-0 group-hover:opacity-100 p-2 text-red-400 hover:bg-red-50 rounded-lg transition-all">
                           <Trash2 className="w-4 h-4" />
-                       </button>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            </motion.div>
-          )}
-
-          {activeAdminTab === 'keys' && (
-            <motion.div 
-               key="keys"
-               initial={{ opacity: 0, x: 20 }}
-               animate={{ opacity: 1, x: 0 }}
-               className="space-y-6"
-            >
-              <section className="bg-white p-8 rounded-3xl border border-gray-100 shadow-sm">
-                <h3 className="text-xl font-bold mb-6">Engine API Management</h3>
-                <form onSubmit={handleAddKey} className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
-                  <input
-                    type="text"
-                    placeholder="Internal Alias (e.g. Primary Flash)"
-                    value={newKeyName}
-                    onChange={(e) => setNewKeyName(e.target.value)}
-                    className="px-4 py-3 bg-gray-50 border border-gray-200 rounded-2xl focus:ring-2 focus:ring-indigo-500 font-medium"
-                  />
-                  <input
-                    type="password"
-                    placeholder="Secured Key Value"
-                    value={newKeyValue}
-                    onChange={(e) => setNewKeyValue(e.target.value)}
-                    className="px-4 py-3 bg-gray-50 border border-gray-200 rounded-2xl focus:ring-2 focus:ring-indigo-500 font-medium"
-                  />
-                  <input
-                    type="email"
-                    placeholder="Owner Allocation (Optional)"
-                    value={newKeyAssignedTo}
-                    onChange={(e) => setNewKeyAssignedTo(e.target.value)}
-                    className="px-4 py-3 bg-gray-50 border border-gray-200 rounded-2xl focus:ring-2 focus:ring-indigo-500 font-medium"
-                  />
-                  <button type="submit" className="bg-indigo-600 text-white font-bold rounded-2xl shadow-lg shadow-indigo-100 h-[52px] md:col-span-2 lg:col-span-1">
-                    Register Engine Key
-                  </button>
-                </form>
-
-                <div className="space-y-4">
-                  {apiKeys.map(k => (
-                    <div key={k.id} className="p-5 bg-white border border-gray-100 rounded-3xl shadow-sm flex items-center justify-between group">
-                       <div className="flex-1">
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className="font-bold text-gray-900">{k.name}</span>
-                            <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded-full ${k.assignedTo ? 'bg-indigo-50 text-indigo-600' : 'bg-green-50 text-green-600'}`}>
-                               {k.assignedTo ? `Owned by ${k.assignedTo}` : 'Global Pool'}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-4">
-                            <code className="text-xs text-gray-400 font-mono">••••••••••••••••••••</code>
-                            <div className="flex items-center gap-2">
-                               <input 
-                                 id={`reassign-${k.id}`}
-                                 defaultValue={k.assignedTo || ''}
-                                 className="text-[10px] bg-gray-50 border border-gray-100 rounded-lg px-2 py-1 w-40 font-bold"
-                                 placeholder="Relocate..."
-                               />
-                               <button onClick={() => {
-                                 const el = document.getElementById(`reassign-${k.id}`) as HTMLInputElement;
-                                 handleUpdateAssignment(k.id, el.value);
-                               }} className="text-[10px] font-bold text-indigo-600 hover:underline">Reassign</button>
-                            </div>
-                          </div>
-                       </div>
-                       <button onClick={() => handleDeleteKey(k.id)} className="p-3 text-red-400 hover:bg-red-50 rounded-2xl transition-all">
-                          <Trash2 className="w-5 h-5" />
                        </button>
                     </div>
                   ))}
@@ -738,6 +608,176 @@ export default function AdminPanel() {
                       ))}
                     </tbody>
                   </table>
+                </div>
+              </section>
+            </motion.div>
+          )}
+
+          {activeAdminTab === 'settings' && (
+            <motion.div 
+               key="settings"
+               initial={{ opacity: 0, x: 20 }}
+               animate={{ opacity: 1, x: 0 }}
+               className="space-y-6"
+            >
+              <section className="bg-white p-8 rounded-3xl border border-gray-100 shadow-sm">
+                <div className="flex items-center gap-2 mb-6">
+                   <div className="bg-indigo-50 p-2 rounded-xl text-indigo-600">
+                      <Settings className="w-5 h-5" />
+                   </div>
+                   <h3 className="text-xl font-bold">System Configuration</h3>
+                </div>
+
+                <div className="max-w-2xl">
+                  <div className="mb-8 p-6 bg-indigo-50/50 rounded-2xl border border-indigo-100">
+                     <h4 className="font-bold text-indigo-900 mb-2 flex items-center gap-2">
+                        <Key className="w-4 h-4" /> Central Gemini API Key
+                     </h4>
+                     <p className="text-sm text-indigo-700 mb-6 font-medium">
+                        This key will be used by all users for all features (Image Prompts, Video Prompts, Scripts, etc.).
+                        Ensure this key has sufficient quota and is linked to a funded project.
+                     </p>
+
+                     <div className="space-y-4">
+                        <div>
+                          <label className="block text-[10px] font-black uppercase text-gray-400 mb-2 tracking-widest pl-1">API Key Value</label>
+                          <div className="relative group">
+                            <input 
+                               type={isKeyVisible ? "text" : "password"}
+                               value={systemKey}
+                               onChange={(e) => setSystemKey(e.target.value)}
+                               placeholder="Enter Gemini API Key..."
+                               className="w-full bg-white border border-gray-200 rounded-2xl px-5 py-4 text-sm font-mono focus:ring-2 focus:ring-indigo-500 transition-all shadow-sm"
+                            />
+                            <button 
+                              type="button"
+                              onClick={() => setIsKeyVisible(!isKeyVisible)}
+                              className="absolute right-4 top-1/2 -translate-y-1/2 p-2 text-gray-400 hover:text-indigo-600 transition-colors"
+                            >
+                              {isKeyVisible ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-3">
+                           <button 
+                             onClick={handleVerifySystemKey}
+                             disabled={isVerifyingKey || !systemKey.trim()}
+                             className="flex items-center gap-2 px-6 py-3 bg-white border border-gray-200 rounded-2xl text-sm font-bold text-gray-700 hover:bg-gray-50 transition-all disabled:opacity-50"
+                           >
+                             {isVerifyingKey ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldAlert className="w-4 h-4" />}
+                             Validate Connection
+                           </button>
+
+                           <button 
+                             onClick={handleSaveSystemKey}
+                             disabled={isSavingKey || !systemKey.trim()}
+                             className="flex items-center gap-2 px-8 py-3 bg-indigo-600 text-white rounded-2xl text-sm font-bold shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all disabled:opacity-50"
+                           >
+                             {isSavingKey ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+                             Save & Apply System Key
+                           </button>
+
+                           <button 
+                             onClick={async () => {
+                               if (window.confirm('Are you sure you want to remove the system key? This will stop the tool from working for everyone.')) {
+                                 try {
+                                   await updateDoc(doc(db, 'system_config', 'gemini'), { keyValue: '', updatedAt: Date.now() });
+                                   setSystemKey('');
+                                   alert('System key removed.');
+                                 } catch (e) { console.error(e); }
+                               }
+                             }}
+                             className="flex items-center gap-2 px-4 py-3 text-red-500 hover:bg-red-50 rounded-2xl text-sm font-bold transition-all"
+                           >
+                             <Trash2 className="w-4 h-4" />
+                             Delete Key
+                           </button>
+                        </div>
+
+                        {verificationResult && (
+                          <motion.div 
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className={`p-4 rounded-2xl border text-sm font-medium ${
+                               verificationResult.ok 
+                               ? 'bg-green-50 border-green-200 text-green-700 font-bold' 
+                               : 'bg-red-50 border-red-200 text-red-700 max-w-full overflow-hidden'
+                            }`}
+                          >
+                            <div className="flex items-start gap-2">
+                               {verificationResult.ok ? <CheckCircle className="w-4 h-4 mt-0.5 flex-shrink-0" /> : <XCircle className="w-5 h-5 mt-0 flex-shrink-0" />}
+                               <div className="flex-1 min-w-0">
+                                 {verificationResult.ok 
+                                   ? 'API Key is VALID and ready for production use!' 
+                                   : (
+                                      <div className="flex flex-col gap-2">
+                                        <p className="font-bold text-red-800">Verification Failed:</p>
+                                        <p className="text-xs break-words font-mono bg-white/50 p-2 rounded">{verificationResult.error}</p>
+                                        {verificationResult.error?.includes('API_KEY_SERVICE_BLOCKED') && (
+                                            <div className="mt-2 text-xs bg-red-100 p-3 rounded-lg border border-red-200 font-medium text-red-900 shadow-sm">
+                                              <p className="font-bold mb-2 uppercase text-[10px] tracking-wider flex items-center gap-1"><ShieldAlert className="w-3 h-3" /> How to fix this error:</p>
+                                              <p className="mb-2">Google is blocking this key because the <b>Generative Language API</b> is not enabled on your Google Cloud Project.</p>
+                                              <ol className="list-decimal pl-4 space-y-2">
+                                                <li>The <b>easiest solution</b> is to get a fresh key directly from <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="underline font-bold text-blue-700">Google AI Studio</a>. Keys made here work instantly.</li>
+                                                <li>If using Google Cloud Platform (GCP): You <b>must</b> search for "Generative Language API" (NOT Vertex AI) and click Enable.</li>
+                                                <li>Go to Credentials {'>'} API Keys. Ensure <b>Application restrictions</b> are set to <b>None</b>.</li>
+                                                <li>Ensure your billing account is actively linked if you selected the paid tier.</li>
+                                              </ol>
+                                            </div>
+                                        )}
+                                        {verificationResult.error?.includes('prepayment credits are depleted') && (
+                                            <div className="mt-2 text-xs bg-red-100 p-3 rounded-lg border border-red-200 font-medium text-red-900 shadow-sm">
+                                              <p className="font-bold mb-2 uppercase text-[10px] tracking-wider flex items-center gap-1"><ShieldAlert className="w-3 h-3" /> Billing Issue: Outstanding Balance or Depleted Credit</p>
+                                              <p className="mb-2">Your API key is valid, but the associated Google Cloud / AI Studio project has run out of funds.</p>
+                                              <ol className="list-decimal pl-4 space-y-2">
+                                                <li><b>The $300 GCP Trial Issue:</b> While you have a $300 Google Cloud Platform trial, Google AI Studio uses a separate <b>prepaid billing system</b> that may not automatically draw from your GCP trial credits depending on your account setup.</li>
+                                                <li><b>Solution 1:</b> Go to <a href="https://ai.studio/projects" target="_blank" rel="noreferrer" className="underline font-bold text-blue-700">AI Studio Billing</a>, switch to the correct project, and either add $5-$10 prepay funds or unlink the billing account to downgrade back to the <b>Free Tier</b> (which has a lower rate limit but is 100% free).</li>
+                                                <li><b>Solution 2 (Recommended):</b> Generate a completely new API key from a brand new Google account without attaching any billing (Free Tier). Free tier allows ~15 requests per minute, which is enough for basic usage.</li>
+                                                <li><b>Solution 3:</b> Check your GCP Console Billing section to ensure your $300 credits are actually active and your billing account is linked to the exact project that generated this API key.</li>
+                                              </ol>
+                                            </div>
+                                        )}
+                                        {verificationResult.error?.includes('Quota exceeded') && verificationResult.error?.includes('limit: 0') && (
+                                            <div className="mt-2 text-xs bg-orange-100 p-3 rounded-lg border border-orange-200 font-medium text-orange-900 shadow-sm">
+                                              <p className="font-bold mb-2 uppercase text-[10px] tracking-wider flex items-center gap-1"><ShieldAlert className="w-3 h-3" /> Free Tier / Model Conflict</p>
+                                              <p className="mb-2">Your API key has a <b>Quota Limit of 0</b>. This usually happens for one of these reasons:</p>
+                                              <ol className="list-decimal pl-4 space-y-2">
+                                                <li><b>Model Not Available:</b> We were trying to use a newer model which may not have a free tier in your region. <b>GOOD NEWS:</b> I have just successfully updated our code to use a different robust model (gemini-1.5-pro) everywhere. Try clicking verify again now!</li>
+                                                <li><b>The Prepay Trap:</b> Your AI Studio project is still linked to a "Tier 1 - Prepay" billing account that has 0 credits. Even if you "disabled" billing, if the project still shows as "Tier 1" in AI Studio, your free tier limit is permanently 0. <b>Solution:</b> Create a brand new project in AI Studio without attaching any billing account, and generate a new key there.</li>
+                                                <li><b>Location Issue:</b> Google AI Studio's <b>Free Tier is NOT available in the UK, EU, or Switzerland</b>. (If your Google account's payment profile is registered in these regions, it applies even if you are physically elsewhere).</li>
+                                              </ol>
+                                            </div>
+                                        )}
+                                        {verificationResult.error?.includes('Quota exceeded') && !verificationResult.error?.includes('limit: 0') && (
+                                            <div className="mt-2 text-xs bg-orange-100 p-3 rounded-lg border border-orange-200 font-medium text-orange-900 shadow-sm">
+                                              <p className="font-bold mb-2 uppercase text-[10px] tracking-wider flex items-center gap-1"><ShieldAlert className="w-3 h-3" /> Rate Limit Exceeded</p>
+                                              <p className="mb-2">You have exceeded your Free Tier quotas (15 requests per minute, 1500 per day).</p>
+                                              <ol className="list-decimal pl-4 space-y-2">
+                                                <li>Please wait a minute before trying again if you hit the RPM limit.</li>
+                                                <li>If you hit the daily limit, you will need to wait until UTC midnight.</li>
+                                                <li>To increase your quota, you can enable billing in AI Studio.</li>
+                                              </ol>
+                                            </div>
+                                        )}
+                                     </div>
+                                   )}
+                               </div>
+                            </div>
+                          </motion.div>
+                        )}
+                     </div>
+                  </div>
+
+                  <div className="p-6 bg-orange-50/50 rounded-2xl border border-orange-100">
+                     <div className="flex items-center gap-2 text-orange-600 mb-2">
+                        <Loader2 className="w-4 h-4" />
+                        <h4 className="font-bold">System Maintenance</h4>
+                     </div>
+                     <p className="text-xs text-orange-700 font-medium leading-relaxed">
+                        Changes to the system key are applied instantly. All users currently logged in will automatically start using the new key on their next generation attempt.
+                     </p>
+                  </div>
                 </div>
               </section>
             </motion.div>

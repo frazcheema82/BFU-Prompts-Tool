@@ -1,20 +1,14 @@
 import { GoogleGenAI, HarmCategory, HarmBlockThreshold, Type, Schema } from '@google/genai';
 
 function getGenAI(apiKey?: string) {
-  let rawKey = apiKey || process.env.GEMINI_API_KEY;
-  if (!rawKey) {
-    throw new Error("No Gemini API key provided and no default key found.");
-  }
-  
-  // Sanitize key: remove characters that would cause "Failed to execute 'append' on 'Headers'"
-  // We remove anything that isn't a standard ASCII printable character.
+  let rawKey = apiKey || (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
   const finalKey = rawKey.replace(/[^\x21-\x7E]/g, "").trim();
   
   if (finalKey.length !== rawKey.trim().length) {
     console.warn("API Key sanitized: some non-standard characters were removed.");
   }
   
-  return new GoogleGenAI({ apiKey: finalKey });
+  return { __apiKey: finalKey };
 }
 
 // Global safety settings configured to BLOCK_ONLY_HIGH to allow action/fighting scripts
@@ -39,25 +33,35 @@ const relaxedSafetySettings = [
 
 async function callGemini(ai: any, modelName: string, contents: any[], config: any, retries = 2): Promise<any> {
     try {
-      const response = await ai.models.generateContent({
-        model: modelName,
-        contents,
-        config: {
-          ...config,
-          safetySettings: relaxedSafetySettings,
-        }
+      const res = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelName,
+          contents,
+          apiKey: ai.__apiKey,
+          systemInstruction: config.systemInstruction,
+          responseSchema: config.responseSchema,
+          responseMimeType: config.responseMimeType,
+          temperature: config.temperature
+        })
       });
-      return response;
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Unknown server error');
+      }
+
+      return { text: data.text };
     } catch (error: any) {
       const msg = error.message || String(error);
       if ((msg.includes("429") || msg.toLowerCase().includes("quota")) && retries > 0) {
         // Exponential backoff
-        await new Promise(resolve => setTimeout(resolve, (3 - retries) * 1000));
+        await new Promise(resolve => setTimeout(resolve, (3 - retries) * 2000));
         return await callGemini(ai, modelName, contents, config, retries - 1);
       }
-      // If it fails with 404, try flash-lite as fallback
-      if ((msg.includes("404") || msg.includes("not found")) && modelName.includes("gemini-3") && retries > 0) {
-        return await callGemini(ai, "gemini-3.1-flash-lite", contents, config, 0);
+      if ((msg.includes("404") || msg.includes("not found")) && retries > 0) {
+        return await callGemini(ai, "gemini-1.5-pro", contents, config, retries - 1);
       }
       throw error;
     }
@@ -70,15 +74,9 @@ function truncate(str: string, max = 100000): string {
 
 function formatError(error: any): string {
   const msg = error.message || String(error);
-  if (msg.includes("credits are depleted") || msg.includes("prepayment")) {
-    return "Your Gemini API prepayment credits are exhausted. Please check your billing at ai.studio or use a different API key.";
-  }
-  if (msg.includes("429") || msg.toLowerCase().includes("quota")) {
-    return "Error 429: API limit reached (Quota Exhausted). Please wait a moment or check your API key status.";
-  }
-  if (msg.includes("400") || msg.toLowerCase().includes("context")) {
-    return "Error 400: Script is too long or context window exceeded.";
-  }
+  console.error("Gemini API Error Detail:", msg);
+  
+  // Just return the clean API message for now so we don't mask what is actually going on.
   return msg;
 }
 
@@ -125,7 +123,7 @@ export async function extractCharacters(
   apiKey: string
 ): Promise<CharacterDetail[]> {
   const ai = getGenAI(apiKey);
-  const model = 'gemini-3-flash-preview';
+  const model = 'gemini-1.5-pro';
 
   const systemInstruction = `You are an expert film casting director and character designer.
 Your task is to analyze a script and extract all distinct characters.
@@ -175,7 +173,8 @@ Ensure each character has a completely distinct and unique physical description 
 
     const text = response.text;
     if (!text) throw new Error("No response from Gemini.");
-    return JSON.parse(text).characters;
+    const parsed = JSON.parse(text);
+    return (parsed.characters || []) as CharacterDetail[];
   } catch (error: any) {
     console.error("Error extracting characters:", error);
     throw new Error(formatError(error));
@@ -188,7 +187,7 @@ export async function analyzeAndSuggestStyle(
   apiKey: string
 ): Promise<StyleRecommendation> {
   const ai = getGenAI(apiKey);
-  const model = 'gemini-3-flash-preview';
+  const model = 'gemini-1.5-pro';
 
   const systemInstruction = `You are an expert creative director and YouTube viral content strategist.
 Your task is to analyze a script and title, and recommend the absolute best visual style, media type, and overall aesthetic to make this video go viral on YouTube.
@@ -241,7 +240,7 @@ export async function generatePrompts(
 ): Promise<PromptGenerationResult> {
   const ai = getGenAI(apiKey);
 
-  const model = 'gemini-3-flash-preview';
+  const model = 'gemini-1.5-pro';
 
   let characterConsistencyRules = '';
   if (uploadedCharacters && uploadedCharacters.length > 0) {
@@ -345,7 +344,9 @@ ${truncate(script, 100000)}
     }
 
     const result: PromptGenerationResult = JSON.parse(text);
-    return result;
+    return {
+      prompts: result.prompts || []
+    };
   } catch (error: any) {
     console.error("Error generating prompts:", error);
     throw new Error(formatError(error));
@@ -363,7 +364,7 @@ export async function generateVideoPrompts(
 ): Promise<PromptGenerationResult> {
   const ai = getGenAI(apiKey);
 
-  const model = 'gemini-3-flash-preview';
+  const model = 'gemini-1.5-pro';
 
   let characterInstruction = 'Whenever referring to the main character or protagonist in the scene, you MUST use the exact word "CHARACTER" (in all caps). Do not use names, pronouns (he/she/they), or generic terms like "man" or "woman".';
   
@@ -443,7 +444,9 @@ ${truncate(script, 100000)}
     }
 
     const result: PromptGenerationResult = JSON.parse(text);
-    return result;
+    return {
+      prompts: result.prompts || []
+    };
   } catch (error: any) {
     console.error("Error generating video prompts:", error);
     throw new Error(formatError(error));
@@ -457,7 +460,7 @@ export async function estimateAmericanTalePrompts(
   apiKey: string
 ): Promise<number> {
   const ai = getGenAI(apiKey);
-  const model = 'gemini-3-flash-preview';
+  const model = 'gemini-1.5-pro';
 
   const systemInstruction = `You are an expert AI film director and storyboard artist specializing in Historical American Tales (1600-1945).
 The user is providing a title, an era (${era}), and a script.
@@ -505,7 +508,7 @@ export async function generateAmericanTalePrompts(
 ): Promise<PromptGenerationResult> {
   const ai = getGenAI(apiKey);
 
-  const model = 'gemini-3-flash-preview';
+  const model = 'gemini-1.5-pro';
 
   const systemInstruction = `You are an expert AI image prompt generator and historical film director.
 Your task is to analyze a historical American script (Era: ${era}) and generate EXACTLY ${count} highly detailed image generation prompts.
@@ -569,7 +572,9 @@ ${truncate(script, 100000)}
     }
 
     const result: PromptGenerationResult = JSON.parse(text);
-    return result;
+    return {
+      prompts: result.prompts || []
+    };
   } catch (error: any) {
     console.error("Error generating American Tale prompts:", error);
     throw new Error(formatError(error));
@@ -608,7 +613,7 @@ export async function enhanceScript(
   apiKey: string
 ): Promise<EnhancedScriptResult> {
   const ai = getGenAI(apiKey);
-  const model = 'gemini-3-flash-preview';
+  const model = 'gemini-1.5-pro';
 
   const systemInstruction = `You are a world-class YouTube Script Doctor and Growth Strategist. 
 You understand exactly how the Gemini/YouTube recommendation algorithms analyze content for quality vs. "slop".
@@ -666,7 +671,7 @@ export async function generateChannelStrategy(
 ): Promise<ChannelStrategyResult> {
   try {
   const ai = getGenAI(apiKey);
-  const model = 'gemini-3-flash-preview';
+  const model = 'gemini-1.5-pro';
   const prompt = `You are an expert YouTube Strategist and Channel Planner.
 I will provide you with the following inputs:
 - Research: ${truncate(research, 50000)}
@@ -722,7 +727,11 @@ Analyze provided details. Provide: 1. Target audience psychological profile (ove
       throw new Error("No text returned from Gemini API.");
     }
     
-    return JSON.parse(text) as ChannelStrategyResult;
+    const parsed = JSON.parse(text) as ChannelStrategyResult;
+    return {
+      ...parsed,
+      suggestedStyles: parsed.suggestedStyles || []
+    };
   } catch (error: any) {
     console.error("Error generating Channel Strategy:", error);
     throw new Error(formatError(error));
@@ -739,7 +748,7 @@ export async function generateDeepScenePrompts(
 ): Promise<PromptGenerationResult> {
   try {
     const ai = getGenAI(apiKey);
-    const model = 'gemini-3-flash-preview';
+    const model = 'gemini-1.5-pro';
     
     const systemPrompt = `You are an expert AI Cinematographer.
 Analyze the ENTIRE script. Imagine the cinematography. Create Exactly ${targetCount} distinct visual moments. 
@@ -790,7 +799,9 @@ ${truncate(script, 100000)}
     }
 
     const result: PromptGenerationResult = JSON.parse(text);
-    return result;
+    return {
+      prompts: result.prompts || []
+    };
   } catch (error: any) {
     console.error("Error generating Deep Scene Prompts:", error);
     throw new Error(formatError(error)); // Keep signature
@@ -818,12 +829,29 @@ export async function detectTargetAudience(
 ): Promise<{ language: string; country: string; reasoning: string }> {
   try {
     const ai = getGenAI(apiKey || '');
-    const model = 'gemini-3-flash-preview';
+    const model = 'gemini-1.5-pro';
 
     const systemInstruction = `You are a Global Audience Analyst. Based on a YouTube Niche and Title, predict the most profitable and high-reach target audience.
-Return JSON: { "language": "string", "country": "string", "reasoning": "brief explanation" }`;
+Return a JSON object with:
+- language: The primary language for the script.
+- country: The primary target region.
+- reasoning: Short explanation of why this target is best.`;
 
-    const response = await callGemini(ai, model, [{ role: 'user', parts: [{ text: `Niche: ${niche}\nTitle: ${title}` }] }], { systemInstruction, responseMimeType: 'application/json' });
+    const responseSchema: Schema = {
+      type: Type.OBJECT,
+      properties: {
+        language: { type: Type.STRING },
+        country: { type: Type.STRING },
+        reasoning: { type: Type.STRING }
+      },
+      required: ["language", "country", "reasoning"]
+    };
+
+    const response = await callGemini(ai, model, [{ role: 'user', parts: [{ text: `Niche: ${niche}\nTitle: ${title}` }] }], { 
+      systemInstruction, 
+      responseMimeType: 'application/json',
+      responseSchema
+    });
 
     return JSON.parse(response.text.trim());
   } catch (error: any) {
@@ -837,7 +865,7 @@ export async function analyzeScriptStrategy(
 ): Promise<ScriptStrategyResult> {
   try {
     const ai = getGenAI(apiKey || '');
-    const model = 'gemini-3-flash-preview';
+    const model = 'gemini-1.5-pro';
 
     const systemInstruction = `You are the "Viral Script Strategist". Your goal is to analyze a video concept and build a strategy that forces the YouTube/Gemini ranking algorithm to push the content.
 
@@ -845,14 +873,48 @@ RULES:
 1. Identify Niche, Sub-Niche, and Micro-Niche.
 2. Suggest word count based on retention data for this micro-niche.
 3. Explain the "Anti-Slop" strategy to prevent the script from being flagged as low-quality AI content.
-4. Create a logic-based outline for a high-retention script.
+4. Create a logic-based outline (at least 4-6 parts) for a high-retention script.
 5. DO NOT provide the script yet. Only the blueprint.
 
 Return JSON matching ScriptStrategyResult interface.`;
 
-    const response = await callGemini(ai, model, [{ role: 'user', parts: [{ text: JSON.stringify(data) }] }], { systemInstruction, responseMimeType: 'application/json' });
+    const responseSchema: Schema = {
+      type: Type.OBJECT,
+      properties: {
+        niche: { type: Type.STRING },
+        subNiche: { type: Type.STRING },
+        microNiche: { type: Type.STRING },
+        recommendedWordCount: { type: Type.INTEGER },
+        wordCountJustification: { type: Type.STRING },
+        strategicApproach: { type: Type.STRING },
+        rankingTriggers: { type: Type.ARRAY, items: { type: Type.STRING } },
+        outline: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              heading: { type: Type.STRING },
+              focus: { type: Type.STRING }
+            },
+            required: ["heading", "focus"]
+          }
+        }
+      },
+      required: ["niche", "subNiche", "microNiche", "recommendedWordCount", "wordCountJustification", "strategicApproach", "rankingTriggers", "outline"]
+    };
 
-    return JSON.parse(response.text.trim());
+    const response = await callGemini(ai, model, [{ role: 'user', parts: [{ text: JSON.stringify(data) }] }], { 
+      systemInstruction, 
+      responseMimeType: 'application/json',
+      responseSchema
+    });
+
+    const res = JSON.parse(response.text.trim());
+    return {
+      ...res,
+      rankingTriggers: res.rankingTriggers || [],
+      outline: res.outline || []
+    };
   } catch (error: any) {
     throw new Error(formatError(error));
   }
@@ -871,9 +933,10 @@ export async function generateScriptPart(
 ): Promise<string> {
   try {
     const ai = getGenAI(apiKey || '');
-    const model = 'gemini-3-flash-preview';
+    const model = 'gemini-1.5-pro';
 
-    const currentSection = params.strategy.outline[params.partIndex];
+    const outline = params.strategy.outline || [];
+    const currentSection = outline[params.partIndex] || { heading: "Next Part", focus: "Continue the story with high engagement." };
 
     const systemInstruction = `You are the "Master Script Architect". You are writing Part ${params.partIndex + 1} of ${params.totalParts} for a viral YouTube script.
 
@@ -888,8 +951,8 @@ STRICT WRITING RULES:
 
 Current Section Focus: ${currentSection.heading} - ${currentSection.focus}`;
 
-    const contents = [{ role: 'user', parts: [{ text: params.previousContent ? `Previous Part Context: ${params.previousContent}` : "Start the script with a powerful hook." }] }];
-    const response = await callGemini(ai, model, contents, { systemInstruction });
+    const contents = [{ role: 'user', parts: [{ text: params.previousContent ? `Previous Part Context: ${truncate(params.previousContent, 20000)}` : "Start the script with a powerful hook." }] }];
+    const response = await callGemini(ai, model, contents, { systemInstruction, temperature: 0.8 });
 
     return response.text.trim();
   } catch (error: any) {
@@ -911,7 +974,7 @@ export async function generateAdminAdvice(
     totalUsers: number;
     totalGenerations: number;
     pendingRequests: number;
-    activeKeys: number;
+    activeKeys?: number;
     recentErrors: number;
   },
   userMessage?: string,
@@ -919,7 +982,7 @@ export async function generateAdminAdvice(
 ): Promise<AdminAdviceResult> {
   try {
     const ai = getGenAI(apiKey || '');
-    const model = 'gemini-3-flash-preview';
+    const model = 'gemini-1.5-pro';
 
     const systemInstruction = `You are "Aura", the AI System Architect and Admin Assistant for BFU Prompts.
 Your goal is to help the administrator manage the platform, analyze site health, and provide growth strategies.
@@ -960,3 +1023,13 @@ Output format MUST BE JSON:
   }
 }
 
+export async function verifyApiKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
+  try {
+    const ai = getGenAI(apiKey);
+    const model = 'gemini-1.5-pro';
+    await callGemini(ai, model, ["Hi"], { temperature: 0 });
+    return { valid: true };
+  } catch (error: any) {
+    return { valid: false, error: formatError(error) };
+  }
+}

@@ -8,7 +8,7 @@ service cloud.firestore {
     function incoming() { return request.resource.data; }
     function existing() { return resource.data; }
     function isSignedIn() { return request.auth != null; }
-    function isHardcodedAdmin() { return isSignedIn() && request.auth.token.email == 'frazcheema82@gmail.com'; }
+    function isHardcodedAdmin() { return isSignedIn() && request.auth.token.email != null && request.auth.token.email == 'frazcheema82@gmail.com'; }
     function isAdminUser() {
       return isHardcodedAdmin() || (isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true);
     }
@@ -24,8 +24,8 @@ service cloud.firestore {
                data.status in ['pending', 'approved', 'rejected', 'dismissed'];
       }
       allow create: if isSignedIn() && isValidId(reqId) && isValidAccessReq(incoming()) && incoming().status == 'pending' && incoming().email == request.auth.token.email;
-      allow get: if isSignedIn() && (existing().email == request.auth.token.email || isAdminUser());
-      allow list: if isSignedIn() && (resource.data.email == request.auth.token.email || isAdminUser());
+      allow get: if isAdminUser() || (isSignedIn() && existing().email == request.auth.token.email);
+      allow list: if isAdminUser() || (isSignedIn() && resource.data.email == request.auth.token.email);
       allow update, delete: if isAdminUser();
     }
     
@@ -57,7 +57,7 @@ service cloud.firestore {
                (data.get('isAdmin', false) is bool);
       }
       
-      allow get: if isSignedIn() && (request.auth.uid == userId || isAdminUser());
+      allow get: if isAdminUser() || (isSignedIn() && request.auth.uid == userId);
       allow list: if isAdminUser();
       allow create: if isSignedIn() && request.auth.uid == userId && isValidId(userId) && isValidUser(incoming()) && (incoming().get('isAdmin', false) == false || isHardcodedAdmin());
       allow update: if (isSignedIn() && request.auth.uid == userId && isValidUser(incoming()) && incoming().uid == existing().uid && incoming().email == existing().email && incoming().createdAt == existing().createdAt && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'updatedAt'])) || (isAdminUser() && isValidUser(incoming()) && incoming().createdAt == existing().createdAt && incoming().uid == existing().uid);
@@ -89,9 +89,15 @@ service cloud.firestore {
                data.status in ['pending', 'approved', 'rejected'];
       }
       allow create: if isSignedIn() && isValidId(reqId) && isValidReq(incoming()) && incoming().status == 'pending';
-      allow get: if isSignedIn() && (existing().userId == request.auth.uid || isAdminUser());
-      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdminUser());
+      allow get: if isAdminUser() || (isSignedIn() && existing().userId == request.auth.uid);
+      allow list: if isAdminUser() || (isSignedIn() && resource.data.userId == request.auth.uid);
       allow update, delete: if isAdminUser();
+    }
+
+    // System Config Collection
+    match /system_config/{docId} {
+      allow get, list: if isSignedIn();
+      allow create, update, delete: if isAdminUser();
     }
     
     // Generations Collection
@@ -111,8 +117,8 @@ service cloud.firestore {
                (data.get('type', '') is string) &&
                (data.get('hidden', false) is bool);
       }
-      allow get: if isSignedIn() && (existing().userId == request.auth.uid || isAdminUser());
-      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdminUser());
+      allow get: if isAdminUser() || (isSignedIn() && existing().userId == request.auth.uid);
+      allow list: if isAdminUser() || (isSignedIn() && resource.data.userId == request.auth.uid);
       allow create: if isSignedIn() && isValidId(genId) && isValidGeneration(incoming()) && exists(/databases/$(database)/documents/users/$(request.auth.uid));
       allow update: if (isAdminUser() && isValidGeneration(incoming())) || (isSignedIn() && existing().userId == request.auth.uid && isValidGeneration(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['hidden']));
       allow delete: if isAdminUser();

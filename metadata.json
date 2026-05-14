@@ -1,5 +1,6 @@
 {
   "name": "BFU Prompts Tool",
   "description": "Analyzes a script and generates detailed image generation prompts for each sentence, with optional character consistency via image upload.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

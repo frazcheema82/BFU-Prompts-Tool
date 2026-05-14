@@ -35,35 +35,88 @@ export interface SavedChannel {
 
 export default function App() {
   const { user, profile, logout, isAdmin, isAllowed, loading, loginWithGoogle } = useAuth();
-  const [availableKeys, setAvailableKeys] = useState<{id: string, name: string, keyValue: string, assignedTo?: string}[]>([]);
-  const [selectedApiKey, setSelectedApiKey] = useState<string>('');
   const [todayGenerations, setTodayGenerations] = useState<number>(0);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [systemApiKey, setSystemApiKey] = useState<string | undefined>(undefined);
 
   const getWordCount = (text: string) => text.trim().split(/\s+/).filter(Boolean).length;
   const getCharCount = (text: string) => text.length;
   const MAX_WORDS = 4000;
 
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'api_keys'), (snapshot) => {
-      const keys = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
-      setAvailableKeys(keys);
-      
-      const allowedKeyIndex = keys.findIndex(k => k.assignedTo === user?.email || isAdmin);
-      const initialKey = allowedKeyIndex >= 0 ? keys[allowedKeyIndex] : undefined;
+    if (!user) return;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
 
-      const isMainAdmin = user?.email === 'frazcheema82@gmail.com';
-
-      if (keys.length > 0 && !selectedApiKey && !isMainAdmin) {
-        setSelectedApiKey(initialKey?.keyValue || '');
-      }
+    const q = query(
+      collection(db, 'generations'),
+      where('userId', '==', user.uid)
+    );
+    
+    const unsub = onSnapshot(q, (snapshot) => {
+      let count = 0;
+      const loadedHistory: HistoryItem[] = [];
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        if (data.userId === user.uid) {
+          if (data.createdAt >= today.getTime() && data.status === 'success') {
+            count++;
+          }
+          if (data.status === 'success' && !data.hidden && data.result) {
+            loadedHistory.push({
+              id: doc.id,
+              timestamp: data.createdAt,
+              type: data.type || 'image',
+              title: data.title,
+              style: data.style,
+              result: data.result
+            });
+          }
+        }
+      });
+      loadedHistory.sort((a,b) => b.timestamp - a.timestamp);
+      setTodayGenerations(count);
+      setHistory(loadedHistory);
     }, (err) => {
-      console.error("api_keys observer error in App:", err);
+      console.error("Generations observer error:", err);
     });
+
     return () => unsub();
-  }, [selectedApiKey, user]);
+  }, [user]);
 
+  useEffect(() => {
+    if (!user) return;
+    // Fetch central system key for all users
+    const unsubKey = onSnapshot(doc(db, 'system_config', 'gemini'), (snapshot) => {
+      if (snapshot.exists()) {
+        setSystemApiKey(snapshot.data().keyValue || undefined);
+      }
+    }, (error) => {
+      console.error("Error fetching system key:", error);
+    });
+    return () => unsubKey();
+  }, [user]);
 
+  const saveToHistory = async (item: Omit<HistoryItem, 'id' | 'timestamp'> & { error?: string }) => {
+    try {
+      await addDoc(collection(db, 'generations'), {
+        userId: user?.uid || 'unknown',
+        userEmail: user?.email || 'unknown',
+        title: item.title,
+        style: item.style,
+        type: item.type,
+        targetAI: 'various',
+        result: item.result || null,
+        error: item.error || null,
+        status: item.error ? 'failed' : 'success',
+        apiKeyUsed: 'System Key',
+        createdAt: Date.now(),
+        hidden: false
+      });
+    } catch (err) {
+      console.error("Failed to save generation to DB", err);
+    }
+  };
 
   const [activeTab, setActiveTab] = useState<'image' | 'video' | 'american' | 'channel' | 'script' | 'history'>('image');
 
@@ -137,69 +190,6 @@ export default function App() {
   // --- HISTORY STATE ---
   const [history, setHistory] = useState<HistoryItem[]>([]);
 
-  useEffect(() => {
-    if (!user) return;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const q = query(
-      collection(db, 'generations'),
-      where('userId', '==', user.uid)
-    );
-    
-    const unsub = onSnapshot(q, (snapshot) => {
-      let count = 0;
-      const loadedHistory: HistoryItem[] = [];
-      snapshot.forEach(doc => {
-        const data = doc.data();
-        if (data.userId === user.uid) {
-          if (data.createdAt >= today.getTime() && data.status === 'success') {
-            count++;
-          }
-          if (data.status === 'success' && !data.hidden && data.result) {
-            loadedHistory.push({
-              id: doc.id,
-              timestamp: data.createdAt,
-              type: data.type || 'image',
-              title: data.title,
-              style: data.style,
-              result: data.result
-            });
-          }
-        }
-      });
-      loadedHistory.sort((a,b) => b.timestamp - a.timestamp);
-      setTodayGenerations(count);
-      setHistory(loadedHistory);
-    }, (err) => {
-      console.error("Generations observer error:", err);
-    });
-
-    return () => unsub();
-  }, [user]);
-
-  const saveToHistory = async (item: Omit<HistoryItem, 'id' | 'timestamp'> & { error?: string }) => {
-    try {
-      const keyName = availableKeys.find(k => k.keyValue === selectedApiKey)?.name || 'Default';
-      await addDoc(collection(db, 'generations'), {
-        userId: user?.uid || 'unknown',
-        userEmail: user?.email || 'unknown',
-        title: item.title,
-        style: item.style,
-        type: item.type,
-        targetAI: 'various',
-        result: item.result || null,
-        error: item.error || null,
-        status: item.error ? 'failed' : 'success',
-        apiKeyUsed: keyName,
-        createdAt: Date.now(),
-        hidden: false
-      });
-    } catch (err) {
-      console.error("Failed to save generation to DB", err);
-    }
-  };
-
   // --- VIDEO PROMPTS STATE ---
   const [videoTitle, setVideoTitle] = useState('');
   const [videoScript, setVideoScript] = useState('');
@@ -270,23 +260,7 @@ export default function App() {
   const [isUploadingOnline, setIsUploadingOnline] = useState(false);
   
   const getEffectiveApiKey = () => {
-    const isAdminUser = profile?.role === 'admin' || profile?.isAdmin || isAdmin || user?.email === 'frazcheema82@gmail.com';
-    
-    // If Admin specifically selected a key, try to use it
-    if (selectedApiKey) {
-      const allowedKey = availableKeys.find(k => k.keyValue === selectedApiKey && (k.assignedTo === user?.email || isAdminUser));
-      if (allowedKey) return allowedKey.keyValue;
-    }
-
-    // If Admin didn't select a key or selection invalid, but is Admin, allow using developer key (undefined)
-    if (isAdminUser) return undefined;
-
-    // For regular users, must have selected a valid assigned key
-    const allowedKey = availableKeys.find(k => k.keyValue === selectedApiKey && k.assignedTo === user?.email);
-    if (!selectedApiKey || !allowedKey) {
-      throw new Error("Please select a valid assigned API Key first. Only an Admin can assign you an API Key.");
-    }
-    return allowedKey.keyValue;
+    return systemApiKey;
   };
 
   const [savedChannels, setSavedChannels] = useState<SavedChannel[]>(() => {
@@ -1061,8 +1035,8 @@ export default function App() {
     try {
       const effectiveKey = getEffectiveApiKey();
       const res = await detectTargetAudience(scriptNiche, scriptTitle, effectiveKey);
-      setScriptLanguage(res.language);
-      setScriptCountry(res.country);
+      setScriptLanguage(res.language || '');
+      setScriptCountry(res.country || '');
     } catch (err: any) {
       console.error(err);
     } finally {
@@ -1083,7 +1057,7 @@ export default function App() {
         country: scriptCountry
       }, effectiveKey);
       setScriptStrategy(strategy);
-      setScriptPreferredWords(strategy.recommendedWordCount);
+      setScriptPreferredWords(strategy.recommendedWordCount || 0);
       setScriptStage('analysis');
     } catch (err: any) {
       setScriptError(err.message || 'Analysis failed');
@@ -1117,12 +1091,58 @@ export default function App() {
     }
   };
 
+  const handleGenerateAllRemaining = async () => {
+    if (!scriptStrategy) return;
+    setIsGeneratingScript(true);
+    setScriptError(null);
+    try {
+      const effectiveKey = getEffectiveApiKey();
+      let currentParts = [...scriptParts];
+      let currentIdx = currentScriptPart;
+      
+      while (currentIdx < scriptStrategy.outline.length) {
+        const part = await generateScriptPart({
+          strategy: scriptStrategy,
+          partIndex: currentIdx,
+          totalParts: scriptStrategy.outline.length,
+          targetWords: scriptPreferredWords,
+          previousContent: currentParts.join('\n\n'),
+          language: scriptLanguage
+        }, effectiveKey);
+        
+        currentParts.push(part);
+        currentIdx++;
+        setScriptParts([...currentParts]);
+        setCurrentScriptPart(currentIdx);
+      }
+      setScriptStage('generation');
+    } catch (err: any) {
+      setScriptError(err.message || 'Complete generation failed');
+    } finally {
+      setIsGeneratingScript(false);
+    }
+  };
+
   const resetScriptModule = () => {
     setScriptStage('input');
     setScriptStrategy(null);
     setScriptParts([]);
     setCurrentScriptPart(0);
     setScriptError(null);
+  };
+
+  const sendToImageGenerator = () => {
+    setScript(scriptParts.join('\n\n'));
+    setTitle(scriptTitle);
+    setActiveTab('image');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  
+  const sendToVideoGenerator = () => {
+    setVideoScript(scriptParts.join('\n\n'));
+    setVideoTitle(scriptTitle);
+    setActiveTab('video');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   // --- CHANNEL PLANNER HANDLERS ---
@@ -1169,7 +1189,7 @@ export default function App() {
         type: 'channel', 
         title: `Channel Plan: ${channelNiche.substring(0, 30)}...`, 
         style: 'Strategy', 
-        count: channelResult.suggestedStyles.length, 
+        count: channelResult?.suggestedStyles?.length || 0, 
         result: channelResult 
       });
       alert('Strategy successfully uploaded online to Firebase!');
@@ -1208,7 +1228,7 @@ export default function App() {
         type: 'video', 
         title: `Deep Scene: ${deepVideoTitle}`, 
         style: `${selectedChannel.name} Style`, 
-        count: generatedResult.prompts.length, 
+        count: generatedResult?.prompts?.length || 0, 
         result: generatedResult 
       });
     } catch (err) {
@@ -1547,23 +1567,16 @@ export default function App() {
               <Menu className="w-6 h-6" />
             </button>
             <div className="h-4 w-px bg-gray-300 hidden md:block" />
-            <div className="flex items-center gap-2 bg-gray-100/50 px-3 py-1.5 rounded-2xl border border-gray-200/50">
-              <KeyRound className="w-4 h-4 text-gray-400" />
-              <select 
-                value={selectedApiKey}
-                onChange={(e) => setSelectedApiKey(e.target.value)}
-                className="bg-transparent text-xs text-gray-600 font-bold focus:outline-none appearance-none cursor-pointer"
-              >
-                {availableKeys.map(k => (
-                  <option key={k.id} value={k.keyValue}>{k.name}</option>
-                ))}
-              </select>
+            <div className="flex items-center gap-2 px-3 py-1.5 ">
+              <span className="text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-1 rounded-lg">
+                Gemini 1.5 Pro Active
+              </span>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
              <div className="px-3 py-1.5 rounded-2xl bg-white border border-gray-200 shadow-sm text-[10px] font-bold text-gray-400 uppercase tracking-widest">
-               AI Era Engine v3.1
+               v1.0.7
              </div>
           </div>
         </header>
@@ -1800,7 +1813,7 @@ export default function App() {
                     <div className="w-full pt-4 animate-in fade-in slide-in-from-top-2">
                        <h3 className="text-md font-bold text-gray-900 mb-3">Extracted Characters</h3>
                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                         {extractedChars.map((char, idx) => (
+                         {(extractedChars || []).map((char, idx) => (
                            <div key={idx} className="bg-gray-50 rounded-xl border border-gray-200 p-4 shadow-sm flex flex-col justify-between">
                              <div>
                                <h4 className="font-bold text-gray-900 flex items-center justify-between">
@@ -1952,7 +1965,7 @@ export default function App() {
                             <label className="block text-xs font-bold tracking-wider text-gray-600 uppercase mb-1">Character Name</label>
                             <input 
                               type="text" 
-                              value={char.name} 
+                              value={char.name || ''} 
                               onChange={(e) => handleUpdateUploadedChar(char.id, 'name', e.target.value)}
                               placeholder="e.g., Alice" 
                               className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors text-sm font-medium"
@@ -1961,7 +1974,7 @@ export default function App() {
                           <div>
                             <label className="block text-xs font-bold tracking-wider text-gray-600 uppercase mb-1">Physical Description & Dress</label>
                             <textarea 
-                              value={char.details} 
+                              value={char.details || ''} 
                               onChange={(e) => handleUpdateUploadedChar(char.id, 'details', e.target.value)}
                               placeholder="Descibe their age, traits, and clothing..." 
                               rows={3}
@@ -2172,7 +2185,7 @@ export default function App() {
                 </div>
 
                 <div className="p-6 sm:p-8 space-y-8">
-                  {result.prompts.map((item, index) => (
+                  {(result?.prompts || []).map((item, index) => (
                     <div key={index} className="bg-gray-50 rounded-xl border border-gray-200 p-5 shadow-sm hover:border-indigo-300 transition-colors">
                       <div className="flex items-center justify-between mb-4">
                         <div className="flex items-center gap-2">
@@ -2575,7 +2588,7 @@ export default function App() {
                 </div>
 
                 <div className="p-6 sm:p-8 space-y-8">
-                  {videoResult.prompts.map((item, index) => (
+                  {(videoResult?.prompts || []).map((item, index) => (
                     <div key={index} className="bg-gray-50 rounded-xl border border-gray-200 p-5 shadow-sm hover:border-indigo-300 transition-colors">
                       <div className="flex items-center justify-between mb-4">
                         <div className="flex items-center gap-2">
@@ -2963,7 +2976,7 @@ export default function App() {
                 </div>
 
                 <div className="p-6 sm:p-8 space-y-8">
-                  {americanResult.prompts.map((item, index) => (
+                  {(americanResult?.prompts || []).map((item, index) => (
                     <div key={index} className="bg-gray-50 rounded-xl border border-gray-200 p-5 shadow-sm hover:border-indigo-300 transition-colors">
                       <div className="flex items-center justify-between mb-4">
                         <div className="flex items-center gap-2">
@@ -3181,13 +3194,13 @@ export default function App() {
                       </h3>
                       <div className="bg-indigo-50/30 p-6 rounded-2xl border border-indigo-100 mb-8">
                          <h4 className="text-sm font-bold text-gray-900 mb-2">Anti-Slop Approach:</h4>
-                         <p className="text-sm text-gray-700 leading-relaxed font-medium capitalize">{scriptStrategy.strategicApproach}</p>
+                         <p className="text-sm text-gray-700 leading-relaxed font-medium">{scriptStrategy.strategicApproach}</p>
                       </div>
 
                       <div className="space-y-4">
                         <h4 className="text-sm font-bold text-gray-900 ml-1 italic">Ranking Triggers (Bypassing AI Quality Filters)</h4>
                         <div className="flex flex-wrap gap-2">
-                          {scriptStrategy.rankingTriggers.map((trigger, i) => (
+                          {(scriptStrategy?.rankingTriggers || []).map((trigger, i) => (
                             <span key={i} className="px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold text-gray-600">
                               {trigger}
                             </span>
@@ -3199,7 +3212,7 @@ export default function App() {
                     <div className="bg-white p-8 rounded-3xl border border-gray-200 shadow-sm">
                       <h3 className="text-xs font-black text-indigo-600 uppercase tracking-[0.2em] mb-6">Execution Outline</h3>
                       <div className="space-y-4">
-                        {scriptStrategy.outline.map((step, i) => (
+                        {(scriptStrategy?.outline || []).map((step, i) => (
                           <div key={i} className="flex gap-4 group">
                              <div className="flex flex-col items-center">
                                 <div className="w-8 h-8 rounded-full bg-gray-100 border-2 border-white shadow-sm flex items-center justify-center text-xs font-black text-gray-400 group-hover:bg-indigo-100 group-hover:text-indigo-600 transition-colors">
@@ -3258,6 +3271,19 @@ export default function App() {
                    
                    <div className="flex items-center gap-3">
                       <button 
+                        onClick={sendToImageGenerator}
+                        className="flex items-center gap-2 px-3 py-1.5 bg-indigo-50 text-indigo-600 rounded-lg text-xs font-bold hover:bg-indigo-100 transition-colors"
+                      >
+                         <ImageIcon className="w-3.5 h-3.5" /> Send to Image Gen
+                      </button>
+                      <button 
+                        onClick={sendToVideoGenerator}
+                        className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 text-emerald-600 rounded-lg text-xs font-bold hover:bg-emerald-100 transition-colors"
+                      >
+                         <Video className="w-3.5 h-3.5" /> Send to Video Gen
+                      </button>
+                      <div className="w-px h-6 bg-gray-200 mx-1" />
+                      <button 
                         onClick={() => {
                           const fullTxt = scriptParts.join('\n\n');
                           navigator.clipboard.writeText(fullTxt);
@@ -3310,19 +3336,32 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="p-6 bg-white border-t border-gray-100 flex items-center justify-center">
+                  <div className="p-6 bg-white border-t border-gray-100 flex items-center justify-center gap-4">
                     {currentScriptPart < scriptStrategy.outline.length ? (
-                      <button 
-                        disabled={isGeneratingScript}
-                        onClick={handleGenerateNextPart}
-                        className="flex items-center gap-3 px-8 py-4 bg-gray-900 text-white font-bold rounded-2xl hover:bg-gray-800 disabled:opacity-50 transition-all shadow-xl shadow-gray-200"
-                      >
-                         {isGeneratingScript ? (
-                           <><Loader2 className="w-5 h-5 animate-spin" /> Processing Narrative...</>
-                         ) : (
-                           <><ArrowRight className="w-5 h-5" /> Construct Next Sequence</>
-                         )}
-                      </button>
+                      <>
+                        <button 
+                          disabled={isGeneratingScript}
+                          onClick={handleGenerateNextPart}
+                          className="flex items-center gap-3 px-8 py-4 bg-gray-900 text-white font-bold rounded-2xl hover:bg-gray-800 disabled:opacity-50 transition-all shadow-xl shadow-gray-200"
+                        >
+                           {isGeneratingScript ? (
+                             <><Loader2 className="w-5 h-5 animate-spin" /> Processing...</>
+                           ) : (
+                             <><ArrowRight className="w-5 h-5" /> Next Sequence</>
+                           )}
+                        </button>
+                        <button 
+                          disabled={isGeneratingScript}
+                          onClick={handleGenerateAllRemaining}
+                          className="flex items-center gap-3 px-8 py-4 bg-indigo-600 text-white font-bold rounded-2xl hover:bg-indigo-700 disabled:opacity-50 transition-all shadow-xl shadow-indigo-100"
+                        >
+                           {isGeneratingScript ? (
+                             <><Loader2 className="w-5 h-5 animate-spin" /> Finalizing Script...</>
+                           ) : (
+                             <><Sparkles className="w-5 h-5" /> Generate All Remaining</>
+                           )}
+                        </button>
+                      </>
                     ) : (
                       <div className="flex items-center gap-2 text-emerald-600 font-bold italic">
                         <Check className="w-5 h-5" /> Entire Outline Synthesized
@@ -3544,7 +3583,7 @@ export default function App() {
                   <div className="mt-8 pt-8 border-t border-gray-100">
                     <h3 className="text-lg font-bold text-gray-900 mb-6">Suggested Visual Styles</h3>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                      {channelResult.suggestedStyles.map((style, idx) => (
+                      {(channelResult?.suggestedStyles || []).map((style, idx) => (
                         <div key={idx} className="bg-white border border-gray-200 p-5 rounded-xl shadow-sm flex flex-col justify-between">
                            <div>
                             <h4 className="font-bold text-gray-900 mb-2 leading-tight">{style.styleName}</h4>
@@ -3624,7 +3663,7 @@ export default function App() {
                        <div className="w-full sm:w-1/2">
                           <label className="block text-sm font-medium text-gray-400 mb-2">Select Style to Apply</label>
                           <select id="deepStyleSelector" className="w-full px-4 py-3 bg-gray-900 border border-gray-800 rounded-lg text-white focus:ring-2 focus:ring-indigo-500">
-                             {channelResult?.suggestedStyles.map((s, i) => (
+                             {(channelResult?.suggestedStyles || []).map((s, i) => (
                                <option key={i} value={s.promptPrefix}>{s.styleName}</option>
                              ))}
                           </select>
@@ -3737,7 +3776,7 @@ export default function App() {
                           {item.type !== 'channel' && (
                             <button
                               onClick={() => {
-                                const blob = new Blob([item.result?.prompts?.map((p: any) => p.prompt).join('\n\n')], { type: 'text/plain' });
+                                const blob = new Blob([(item.result?.prompts || []).map((p: any) => p.prompt).join('\n\n')], { type: 'text/plain' });
                                 const url = URL.createObjectURL(blob);
                                 const a = document.createElement('a');
                                 a.href = url;
